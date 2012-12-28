@@ -43,9 +43,82 @@ VOID Status (const _TCHAR *fmt, ...)
     va_end(argptr);
 }
 
+VOID CreateFoldersForPath (_TCHAR *path)
+{
+    _TCHAR *p = path;
+
+    while (*p)
+    {
+        if (*p == '\\' || *p == '/')
+        {
+            *p = 0;
+            CreateDirectory (p, NULL);
+            *p = '\\';
+        }
+        p++;
+    }
+}
+
+VOID CleanupUpdates (update_t *updates)
+{
+    while (updates->next)
+    {
+        updates = updates->next;
+
+        if (updates->state == STATE_INSTALLED)
+        {
+            if (updates->previousFile)
+            {
+                DeleteFile (updates->outputPath);
+                MoveFile (updates->previousFile, updates->outputPath);
+            }
+            else
+            {
+                DeleteFile (updates->outputPath);
+            }
+        }
+        else if (updates->state == STATE_DOWNLOADED)
+        {
+            DeleteFile (updates->tempPath);
+        }
+    }
+}
+
+VOID DestroyUpdateList (update_t *updates)
+{
+    update_t *next;
+
+    updates = updates->next;
+    if (!updates)
+        return;
+
+    updates->next = NULL;
+
+    while (updates)
+    {
+        next = updates->next;
+
+        if (updates->outputPath)
+            free (updates->outputPath);
+        if (updates->previousFile)
+            free (updates->previousFile);
+        if (updates->tempPath)
+            free (updates->tempPath);
+        if (updates->URL)
+            free (updates->URL);
+
+        free (updates);
+
+        updates = next;
+    }
+}
+
 DWORD WINAPI UpdateThread (VOID *arg)
 {
     DWORD ret = 1;
+
+    update_t updateList = {0};
+    update_t *updates = &updateList;
 
     HANDLE hObsMutex;
 
@@ -65,9 +138,6 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
     SetDlgItemText(hwndMain, IDC_STATUS, TEXT("Searching for available updates..."));
 
-    int responseCode;
-    TCHAR extraHeaders[256];
-    BYTE manifestHash[20];
     TCHAR manifestPath[MAX_PATH];
     TCHAR tempPath[MAX_PATH];
     TCHAR lpAppDataPath[MAX_PATH];
@@ -144,14 +214,14 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
     SetCurrentDirectoryA(baseDirectory);
 
+    //----------------------
+    //Parse update manifest
+    //----------------------
     const char *packageName;
     json_t *package;
 
-    update_t updateList;
-
-    update_t *updates = &updateList;
-
     int totalUpdates = 0;
+    int completedUpdates = 0;
 
     json_object_foreach (root, packageName, package)
     {
@@ -255,10 +325,11 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
             updates->next = NULL;
             updates->fileSize = fileSize;
-            updates->completed = FALSE;
+            updates->previousFile = NULL;
             updates->outputPath = _tcsdup(fullPath);
             updates->tempPath = _tcsdup(tempFilePath);
             updates->URL = _tcsdup(sourceURL);
+            updates->state = STATE_PENDING_DOWNLOAD;
             StringToHash(updateHashStr, updates->hash);
 
             totalUpdates++;
@@ -266,44 +337,123 @@ DWORD WINAPI UpdateThread (VOID *arg)
         }
     }
 
-    updates = &updateList;
-    while (updates->next)
+    //-------------------
+    //Download Updates
+    //-------------------
+    if (totalUpdates)
     {
-        int responseCode;
-
-        if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
-            goto failure;
-
-        updates = updates->next;
-        Status (_T("Updating %s"), updates->outputPath);
-
-        if (!HTTPGetFile(updates->URL, updates->tempPath, _T("Accept-Encoding: gzip"), &responseCode))
+        updates = &updateList;
+        while (updates->next)
         {
-            Status (_T("Update failed: Could not download %s"), updates->URL);
-            goto failure;
+            int responseCode;
+
+            if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
+                goto failure;
+
+            updates = updates->next;
+            Status (_T("Downloading %s"), updates->outputPath);
+
+            if (!HTTPGetFile(updates->URL, updates->tempPath, _T("Accept-Encoding: gzip"), &responseCode))
+            {
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: Could not download %s"), updates->URL);
+                goto failure;
+            }
+
+            if (responseCode != 200)
+            {
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: %s (%d)"), updates->URL, responseCode);
+                goto failure;
+            }
+
+            BYTE downloadHash[20];
+            if (!CalculateFileHash(updates->tempPath, downloadHash))
+            {
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: Couldn't verify integrity of %s"), updates->outputPath);
+                goto failure;
+            }
+
+            if (memcmp(updates->hash, downloadHash, 20))
+            {
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: Integrity check failed on %s"), updates->outputPath);
+                goto failure;
+            }
+
+            updates->state = STATE_DOWNLOADED;
+            completedUpdates++;
         }
 
-        if (responseCode != 200)
+        //----------------
+        //Install updates
+        //----------------
+        if (completedUpdates == totalUpdates)
         {
-            Status (_T("Update failed: %s (%d)"), updates->URL, responseCode);
-            goto failure;
+            _TCHAR oldFileRenamedPath[MAX_PATH];
+
+            updates = &updateList;
+            while (updates->next)
+            {
+                updates = updates->next;
+
+                Status (_T("Installing %s..."), updates->outputPath);
+
+                //Check if we're replacing an existing file or just installing a new one
+                if (GetFileAttributes(updates->outputPath) != INVALID_FILE_ATTRIBUTES)
+                {
+                    //Backup the existing file in case a rollback is needed
+                    StringCbCopy(oldFileRenamedPath, sizeof(oldFileRenamedPath), updates->outputPath);
+                    StringCbCat(oldFileRenamedPath, sizeof(oldFileRenamedPath), _T(".old"));
+                    DeleteFile(oldFileRenamedPath);
+                    if (!MoveFile(updates->outputPath, oldFileRenamedPath))
+                    {
+                        Status (_T("Update failed: Couldn't move existing %s (error %d)"), updates->outputPath, GetLastError());
+                        goto failure;
+                    }
+                    if (!MoveFile(updates->tempPath, updates->outputPath))
+                    {
+                        Status (_T("Update failed: Couldn't move updated %s (error %d)"), updates->outputPath, GetLastError());
+                        goto failure;
+                    }
+
+                    updates->previousFile = _tcsdup(oldFileRenamedPath);
+                    updates->state = STATE_INSTALLED;
+                }
+                else
+                {
+                    //We may be installing into new folders, make sure they exist
+                    CreateFoldersForPath (updates->outputPath);
+
+                    if (!MoveFile(updates->tempPath, updates->outputPath))
+                    {
+                        Status (_T("Update failed: Couldn't install %s (error %d)"), updates->outputPath, GetLastError());
+                        goto failure;
+                    }
+
+                    updates->previousFile = NULL;
+                    updates->state = STATE_INSTALLED;
+                }
+            }
+
+            //If we get here, all updates installed successfully so we can purge the old versions
+            updates = &updateList;
+            while (updates->next)
+            {
+                updates = updates->next;
+
+                if (updates->previousFile)
+                    DeleteFile (updates->previousFile);
+            }
         }
 
-        BYTE downloadHash[20];
-        if (!CalculateFileHash(updates->tempPath, downloadHash))
-        {
-            Status (_T("Update failed: Couldn't verify integrity of %s"), updates->outputPath);
-            goto failure;
-        }
-
-        if (memcmp(updates->hash, downloadHash, 20))
-        {
-            Status (_T("Update failed: SHA1 integrity check failed on %s"), updates->outputPath);
-            goto failure;
-        }
+        Status(_T("Update complete."));
     }
-
-    Status(_T("Update complete."));
+    else
+    {
+        Status (_T("All available updates are already installed."));
+    }
 
     ret = 0;
 
@@ -311,19 +461,29 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
 failure:
 
-    RemoveDirectory (tempPath);
-
-    if (bExiting)
-        ExitProcess (ret);
-
     if (ret)
     {
+        //This handles deleting temp files and rolling back and partially installed updates
+        CleanupUpdates (&updateList);
+        RemoveDirectory (tempPath);
+
         if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
             Status (_T("Update aborted."));
+
+        SendDlgItemMessage(hwndMain, IDC_PROGRESS, PBM_SETSTATE, PBST_ERROR, 0);
 
         SetDlgItemText(hwndMain, IDC_BUTTON, _T("Exit"));
         EnableWindow (GetDlgItem(hwndMain, IDC_BUTTON), TRUE);
     }
+    else
+    {
+        RemoveDirectory (tempPath);
+    }
+
+    DestroyUpdateList (&updateList);
+
+    if (bExiting)
+        ExitProcess (ret);
 
     return ret;
 
@@ -353,6 +513,7 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     {
         case WM_INITDIALOG:
             {
+                //SendDlgItemMessage (hwnd, IDC_PROGRESS, PBM_SETRANGE, 0, MAKELPARAM(0, 200));
                 return TRUE;
             }
 

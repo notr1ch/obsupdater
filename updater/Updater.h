@@ -30,15 +30,24 @@
 #include <jansson.h>
 #include "resource.h"
 
+typedef enum
+{
+    STATE_INVALID,
+    STATE_PENDING_DOWNLOAD,
+    STATE_DOWNLOADED,
+    STATE_INSTALLED,
+} state_t;
+
 typedef struct update_s
 {
     struct update_s *next;
     _TCHAR          *URL;
     _TCHAR          *outputPath;
     _TCHAR          *tempPath;
+    _TCHAR          *previousFile;
     DWORD           fileSize;
     BYTE            hash[20];
-    BOOL            completed;
+    state_t         state;
 } update_t;
 
 BOOL HTTPGetFile (const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *extraHeaders, int *responseCode);

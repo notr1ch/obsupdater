@@ -71,7 +71,7 @@ BOOL HTTPGetFile (const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *ext
     }
 
     BOOL gzip = FALSE;
-    BYTE *outputBuffer;
+    BYTE *outputBuffer = NULL;
 
     z_stream strm;
 
@@ -99,10 +99,11 @@ BOOL HTTPGetFile (const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *ext
 
     if (bResults && *responseCode == 200)
     {
-        BYTE buffer[16384];
+        BYTE buffer[32768];
         DWORD dwSize, dwOutSize, wrote;
 
         HANDLE updateFile;
+        int lastPosition = 0;
 
         updateFile = CreateFile(outputPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
         if (updateFile == INVALID_HANDLE_VALUE)
@@ -177,7 +178,11 @@ BOOL HTTPGetFile (const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *ext
                 }
 
                 int position = (int)(((float)completedFileSize / (float)totalFileSize) * 100.0f);
-                SendDlgItemMessage (hwndMain, IDC_PROGRESS, PBM_SETPOS, position, 0);
+                if (position > lastPosition)
+                {
+                    lastPosition = position;
+                    SendDlgItemMessage (hwndMain, IDC_PROGRESS, PBM_SETPOS, position, 0);
+                }
             }
 
             if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
@@ -194,6 +199,8 @@ BOOL HTTPGetFile (const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *ext
     ret = TRUE;
 
 failure:
+    if (outputBuffer)
+        free(outputBuffer);
     if (hSession)
         WinHttpCloseHandle(hSession);
     if (hConnect)
