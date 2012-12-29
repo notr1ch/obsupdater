@@ -52,14 +52,14 @@ VOID CreateFoldersForPath (_TCHAR *path)
         if (*p == '\\' || *p == '/')
         {
             *p = 0;
-            CreateDirectory (p, NULL);
+            CreateDirectory (path, NULL);
             *p = '\\';
         }
         p++;
     }
 }
 
-VOID CleanupUpdates (update_t *updates)
+VOID CleanupPartialUpdates (update_t *updates)
 {
     while (updates->next)
     {
@@ -111,6 +111,53 @@ VOID DestroyUpdateList (update_t *updates)
 
         updates = next;
     }
+}
+
+BOOL IsSafeFilename (_TCHAR *path)
+{
+    const _TCHAR *p;
+
+    p = path;
+
+    if (!*p)
+       return FALSE;
+
+    if (_tcsstr(path, _T("..")))
+        return FALSE;
+
+    if (*p == '/')
+        return FALSE;
+
+    while (*p)
+    {
+        if (!isalnum(*p) && *p != '.' && *p != '/' && *p != '_')
+            return FALSE;
+        p++;
+    }
+
+    return TRUE;
+}
+
+BOOL IsSafePath (_TCHAR * path)
+{
+    const _TCHAR *p;
+
+    p = path;
+
+    if (!*p)
+        return TRUE;
+
+    if (!isalnum(*p))
+        return FALSE;
+
+    while (*p)
+    {
+        if (*p == '.' || *p == '\\')
+            return FALSE;
+        p++;
+    }
+    
+    return TRUE;
 }
 
 DWORD WINAPI UpdateThread (VOID *arg)
@@ -294,8 +341,21 @@ DWORD WINAPI UpdateThread (VOID *arg)
             if (!MultiByteToWideChar(CP_UTF8, 0, pathStr, -1, fullPath, _countof(fullPath)))
                 continue;
 
+            if (!IsSafePath(fullPath))
+            {
+                Status (_T("Update failed: Unsafe path '%s' found in manifest"), fullPath);
+                goto failure;
+            }
+
             if (!MultiByteToWideChar(CP_UTF8, 0, fileName, -1, updateFileName, _countof(updateFileName)))
                 continue;
+
+            if (!IsSafeFilename(updateFileName))
+            {
+                Status (_T("Update failed: Unsafe path '%s' found in manifest"), updateFileName);
+                goto failure;
+            }
+
             StringCbCat(fullPath, sizeof(fullPath), updateFileName);
 
             if (!MultiByteToWideChar(CP_UTF8, 0, hashStr, -1, updateHashStr, _countof(updateHashStr)))
@@ -464,7 +524,7 @@ failure:
     if (ret)
     {
         //This handles deleting temp files and rolling back and partially installed updates
-        CleanupUpdates (&updateList);
+        CleanupPartialUpdates (&updateList);
         RemoveDirectory (tempPath);
 
         if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
