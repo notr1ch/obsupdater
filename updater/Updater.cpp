@@ -257,9 +257,12 @@ DWORD WINAPI UpdateThread (VOID *arg)
         return 1;
     }
 
-    const LPSTR baseDirectory = (const LPSTR)arg;
-
-    SetCurrentDirectoryA(baseDirectory);
+    const _TCHAR *targetPlatform = (const _TCHAR *)arg;
+    if (!targetPlatform[0])
+    {
+        Status(_T("Update failed: Missing platform paramater."));
+        return 1;
+    }
 
     //----------------------
     //Parse update manifest
@@ -283,13 +286,16 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
         if (strcmp(platformStr, "all"))
         {
-#if defined _M_IX86
-            if (strcmp (platformStr, "Win32"))
-                continue;
-#elif defined _M_X64
-            if (strcmp(platformStr, "Win64"))
-                continue;
-#endif
+            if (!_tcscmp(targetPlatform, _T("Win32")))
+            {
+                if (strcmp (platformStr, "Win32"))
+                    continue;
+            }
+            else if (!_tcscmp(targetPlatform, _T("Win64")))
+            {
+                if (strcmp(platformStr, "Win64"))
+                    continue;
+            }
         }
 
         json_t *name = json_object_get(package, "name");
@@ -396,6 +402,8 @@ DWORD WINAPI UpdateThread (VOID *arg)
             totalFileSize += fileSize;
         }
     }
+
+    json_decref(root);
 
     //-------------------
     //Download Updates
@@ -564,7 +572,27 @@ VOID CancelUpdate (BOOL quit)
 
 VOID LaunchOBS ()
 {
-    ExitProcess (0);
+    _TCHAR cwd[MAX_PATH];
+    _TCHAR obsPath[MAX_PATH];
+
+    GetCurrentDirectory(_countof(cwd)-1, cwd);
+
+    StringCbCopy(obsPath, sizeof(obsPath), cwd);
+    StringCbCat(obsPath, sizeof(obsPath), _T("\\OBS.exe"));
+
+    SHELLEXECUTEINFO execInfo;
+
+    ZeroMemory(&execInfo, sizeof(execInfo));
+
+    execInfo.cbSize = sizeof(execInfo);
+    execInfo.lpFile = obsPath;
+    execInfo.lpDirectory = cwd;
+    execInfo.nShow = SW_SHOWNORMAL;
+
+    if (!ShellExecuteEx (&execInfo))
+        Status(_T("Can't launch OBS: Errror %d"), GetLastError());
+    else
+        ExitProcess (0);
 }
 
 INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -603,7 +631,7 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     return FALSE;
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
+int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nShowCmd)
 {
     INITCOMMONCONTROLSEX icce;
 
@@ -632,4 +660,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             DispatchMessage(&msg);
         }
     }
+
+    return 0;
 }
