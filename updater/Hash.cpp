@@ -40,7 +40,7 @@ BOOL CalculateFileHash (TCHAR *path, BYTE *hash)
         if (GetLastError() == ERROR_FILE_NOT_FOUND)
         {
             //A missing file is OK
-            memset (hash, 0, sizeof(hash));
+            memset (hash, 0, 20);
             return TRUE;
         }
 

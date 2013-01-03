@@ -382,7 +382,7 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
                 HashToString(existingHash, fileHashStr);
 
-                if (!_tccmp(fileHashStr, updateHashStr))
+                if (!_tcscmp(fileHashStr, updateHashStr))
                     continue;
             }
 
