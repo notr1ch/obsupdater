@@ -25,6 +25,7 @@ HWND hwndMain;
 HCRYPTPROV hProvider;
 
 BOOL bExiting;
+BOOL updateFailed = FALSE;
 
 int totalFileSize = 0;
 int completedFileSize = 0;
@@ -542,6 +543,8 @@ failure:
 
         SetDlgItemText(hwndMain, IDC_BUTTON, _T("Exit"));
         EnableWindow (GetDlgItem(hwndMain, IDC_BUTTON), TRUE);
+
+        updateFailed = TRUE;
     }
     else
     {
@@ -590,7 +593,7 @@ VOID LaunchOBS ()
     execInfo.nShow = SW_SHOWNORMAL;
 
     if (!ShellExecuteEx (&execInfo))
-        Status(_T("Can't launch OBS: Errror %d"), GetLastError());
+        Status(_T("Can't launch OBS: Error %d"), GetLastError());
     else
         ExitProcess (0);
 }
@@ -612,7 +615,10 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 {
                     if (WaitForSingleObject(updateThread, 0) == WAIT_OBJECT_0)
                     {
-                        LaunchOBS ();
+                        if (updateFailed)
+                            PostQuitMessage(0);
+                        else
+                            LaunchOBS ();
                     }
                     else
                     {
