@@ -131,7 +131,7 @@ BOOL IsSafeFilename (_TCHAR *path)
 
     while (*p)
     {
-        if (!isalnum(*p) && *p != '.' && *p != '/' && *p != '_')
+        if (!isalnum(*p) && *p != '.' && *p != '/' && *p != '_' && *p != '-')
             return FALSE;
         p++;
     }
@@ -181,7 +181,7 @@ DWORD WINAPI UpdateThread (VOID *arg)
     if (!CryptAcquireContext(&hProvider, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
     {
         SetDlgItemText(hwndMain, IDC_STATUS, TEXT("Update failed: CryptAcquireContext failure"));
-        return 1;
+        goto failure;
     }
 
     SetDlgItemText(hwndMain, IDC_STATUS, TEXT("Searching for available updates..."));
@@ -202,39 +202,39 @@ DWORD WINAPI UpdateThread (VOID *arg)
     if (hManifest == INVALID_HANDLE_VALUE)
     {
         Status(TEXT("Update failed: Could not open update manifest"));
-        return 1;
+        goto failure;
     }
 
-    LARGE_INTEGER fileSize;
+    LARGE_INTEGER manifestfileSize;
 
-    if (!GetFileSizeEx(hManifest, &fileSize))
+    if (!GetFileSizeEx(hManifest, &manifestfileSize))
     {
         Status(TEXT("Update failed: Could not check size of update manifest"));
         return 1;
     }
 
-    CHAR *buff = (CHAR *)malloc ((size_t)fileSize.QuadPart + 1);
+    CHAR *buff = (CHAR *)malloc ((size_t)manifestfileSize.QuadPart + 1);
     if (!buff)
     {
         Status(TEXT("Update failed: Could not allocate memory for update manifest"));
-        return 1;
+        goto failure;
     }
 
     DWORD read;
 
-    if (!ReadFile (hManifest, buff, (DWORD)fileSize.QuadPart, &read, NULL))
+    if (!ReadFile (hManifest, buff, (DWORD)manifestfileSize.QuadPart, &read, NULL))
     {
         CloseHandle (hManifest);
         Status(TEXT("Update failed: Error reading update manifest"));
-        return 1;
+        goto failure;
     }
 
     CloseHandle (hManifest);
 
-    if (read != fileSize.QuadPart)
+    if (read != manifestfileSize.QuadPart)
     {
         Status(_T("Update failed: Failed to read update manifest"));
-        return 1;
+        goto failure;
     }
 
     buff[read] = 0;
@@ -249,20 +249,20 @@ DWORD WINAPI UpdateThread (VOID *arg)
     if (!root)
     {
         Status (_T("Update failed: Couldn't parse update manifest: %S"), error.text);
-        return 1;
+        goto failure;
     }
 
     if(!json_is_object(root))
     {
         Status(_T("Update failed: Invalid update manifest"));
-        return 1;
+        goto failure;
     }
 
     const _TCHAR *targetPlatform = (const _TCHAR *)arg;
     if (!targetPlatform[0])
     {
         Status(_T("Update failed: Missing platform paramater."));
-        return 1;
+        goto failure;
     }
 
     //----------------------
@@ -425,14 +425,14 @@ DWORD WINAPI UpdateThread (VOID *arg)
             if (!HTTPGetFile(updates->URL, updates->tempPath, _T("Accept-Encoding: gzip"), &responseCode))
             {
                 DeleteFile (updates->tempPath);
-                Status (_T("Update failed: Could not download %s"), updates->URL);
+                Status (_T("Update failed: Could not download %s (error code %d)"), updates->outputPath, responseCode);
                 goto failure;
             }
 
             if (responseCode != 200)
             {
                 DeleteFile (updates->tempPath);
-                Status (_T("Update failed: %s (%d)"), updates->URL, responseCode);
+                Status (_T("Update failed: %s (error code %d)"), updates->outputPath, responseCode);
                 goto failure;
             }
 
@@ -652,6 +652,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 
     if (hwndMain)
         ShowWindow(hwndMain, SW_SHOWNORMAL);
+    else
+        return 1;
 
     cancelRequested = CreateEvent (NULL, TRUE, FALSE, NULL);
 
