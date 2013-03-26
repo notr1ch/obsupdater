@@ -252,7 +252,7 @@ DWORD WINAPI UpdateThread (VOID *arg)
         goto failure;
     }
 
-    if(!json_is_object(root))
+    if (!json_is_object(root))
     {
         Status(_T("Update failed: Invalid update manifest"));
         goto failure;
@@ -475,17 +475,21 @@ DWORD WINAPI UpdateThread (VOID *arg)
                     //Backup the existing file in case a rollback is needed
                     StringCbCopy(oldFileRenamedPath, sizeof(oldFileRenamedPath), updates->outputPath);
                     StringCbCat(oldFileRenamedPath, sizeof(oldFileRenamedPath), _T(".old"));
-                    DeleteFile(oldFileRenamedPath);
-                    if (!MoveFile(updates->outputPath, oldFileRenamedPath))
+
+                    if (!MoveFileEx(updates->outputPath, oldFileRenamedPath, MOVEFILE_REPLACE_EXISTING))
                     {
                         Status (_T("Update failed: Couldn't move existing %s (error %d)"), updates->outputPath, GetLastError());
                         goto failure;
                     }
-                    if (!MoveFile(updates->tempPath, updates->outputPath))
+
+                    if (!MoveFileEx(updates->tempPath, updates->outputPath, MOVEFILE_COPY_ALLOWED))
                     {
                         Status (_T("Update failed: Couldn't move updated %s (error %d)"), updates->outputPath, GetLastError());
                         goto failure;
                     }
+
+                    //FIXME: we're moving from the appdata folder to program files, and MoveFileEx preserves the ACL on the
+                    //freshly created temp files. need to assign default SID somehow.
 
                     updates->previousFile = _tcsdup(oldFileRenamedPath);
                     updates->state = STATE_INSTALLED;
@@ -495,7 +499,7 @@ DWORD WINAPI UpdateThread (VOID *arg)
                     //We may be installing into new folders, make sure they exist
                     CreateFoldersForPath (updates->outputPath);
 
-                    if (!MoveFile(updates->tempPath, updates->outputPath))
+                    if (!MoveFileEx(updates->tempPath, updates->outputPath, MOVEFILE_COPY_ALLOWED))
                     {
                         Status (_T("Update failed: Couldn't install %s (error %d)"), updates->outputPath, GetLastError());
                         goto failure;
