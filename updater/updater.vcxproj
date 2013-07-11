@@ -60,7 +60,7 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>jansson.lib;comctl32.lib;shell32.lib;winhttp.lib;zlib.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>../OBSApi/Debug;../jansson/win32/vs2008/Debug;../zlib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>../jansson\win32\vs2010\Output\Release;../zlib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <TargetMachine>MachineX86</TargetMachine>

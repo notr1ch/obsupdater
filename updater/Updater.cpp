@@ -60,6 +60,51 @@ VOID CreateFoldersForPath (_TCHAR *path)
     }
 }
 
+BOOL MyCopyFile (_TCHAR *src, _TCHAR *dest)
+{
+    HANDLE hSrc = NULL, hDest = NULL;
+
+    hSrc = CreateFile (src, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (hSrc == INVALID_HANDLE_VALUE)
+        goto failure;
+
+    hDest = CreateFile (dest, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (hDest == INVALID_HANDLE_VALUE)
+        goto failure;
+
+    BYTE buff[65536];
+    DWORD read, wrote;
+
+    for (;;)
+    {
+        if (!ReadFile (hSrc, buff, sizeof(buff), &read, NULL))
+            goto failure;
+
+        if (read == 0)
+            break;
+
+        if (!WriteFile (hDest, buff, read, &wrote, NULL))
+            goto failure;
+
+        if (wrote != read)
+            goto failure;
+    }
+
+    CloseHandle (hSrc);
+    CloseHandle (hDest);
+
+    return TRUE;
+
+failure:
+    if (hSrc)
+        CloseHandle (hSrc);
+    
+    if (hDest)
+        CloseHandle (hDest);
+
+    return FALSE;
+}
+
 VOID CleanupPartialUpdates (update_t *updates)
 {
     while (updates->next)
@@ -71,7 +116,8 @@ VOID CleanupPartialUpdates (update_t *updates)
             if (updates->previousFile)
             {
                 DeleteFile (updates->outputPath);
-                MoveFile (updates->previousFile, updates->outputPath);
+                MyCopyFile (updates->previousFile, updates->outputPath);
+                DeleteFile (updates->previousFile);
             }
             else
             {
@@ -186,12 +232,40 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
     SetDlgItemText(hwndMain, IDC_STATUS, TEXT("Searching for available updates..."));
 
+    BOOL bIsPortable = FALSE;
+
+    _TCHAR *cmdLine = (_TCHAR *)arg;
+    if (!cmdLine[0])
+    {
+        Status(_T("Update failed: Missing command line parameters."));
+        goto failure;
+    }
+
+    _TCHAR *p = _tcschr(cmdLine, ' ');
+    if (p)
+    {
+        *p = '\0';
+        p++;
+
+        if (!_tcscmp(p, _T("Portable")))
+            bIsPortable = TRUE;
+    }
+
+    const _TCHAR *targetPlatform = cmdLine;
+
     TCHAR manifestPath[MAX_PATH];
     TCHAR tempPath[MAX_PATH];
     TCHAR lpAppDataPath[MAX_PATH];
 
-    SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, lpAppDataPath);
-    StringCbCat (lpAppDataPath, sizeof(lpAppDataPath), TEXT("\\OBS"));
+    if (bIsPortable)
+    {
+        GetCurrentDirectory(_countof(lpAppDataPath), lpAppDataPath);
+    }
+    else
+    {
+        SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, lpAppDataPath);
+        StringCbCat (lpAppDataPath, sizeof(lpAppDataPath), TEXT("\\OBS"));        
+    }
 
     StringCbPrintf (manifestPath, sizeof(manifestPath), TEXT("%s\\updates\\packages.xconfig"), lpAppDataPath);
     StringCbPrintf (tempPath, sizeof(tempPath), TEXT("%s\\updates\\temp"), lpAppDataPath);
@@ -255,13 +329,6 @@ DWORD WINAPI UpdateThread (VOID *arg)
     if (!json_is_object(root))
     {
         Status(_T("Update failed: Invalid update manifest"));
-        goto failure;
-    }
-
-    const _TCHAR *targetPlatform = (const _TCHAR *)arg;
-    if (!targetPlatform[0])
-    {
-        Status(_T("Update failed: Missing platform paramater."));
         goto failure;
     }
 
@@ -482,14 +549,13 @@ DWORD WINAPI UpdateThread (VOID *arg)
                         goto failure;
                     }
 
-                    if (!MoveFileEx(updates->tempPath, updates->outputPath, MOVEFILE_COPY_ALLOWED))
+                    if (!MyCopyFile(updates->tempPath, updates->outputPath))
                     {
                         Status (_T("Update failed: Couldn't move updated %s (error %d)"), updates->outputPath, GetLastError());
                         goto failure;
                     }
 
-                    //FIXME: we're moving from the appdata folder to program files, and MoveFileEx preserves the ACL on the
-                    //freshly created temp files. need to assign default SID somehow.
+                    DeleteFile (updates->tempPath);
 
                     updates->previousFile = _tcsdup(oldFileRenamedPath);
                     updates->state = STATE_INSTALLED;
@@ -499,11 +565,13 @@ DWORD WINAPI UpdateThread (VOID *arg)
                     //We may be installing into new folders, make sure they exist
                     CreateFoldersForPath (updates->outputPath);
 
-                    if (!MoveFileEx(updates->tempPath, updates->outputPath, MOVEFILE_COPY_ALLOWED))
+                    if (!MyCopyFile(updates->tempPath, updates->outputPath))
                     {
                         Status (_T("Update failed: Couldn't install %s (error %d)"), updates->outputPath, GetLastError());
                         goto failure;
                     }
+
+                    DeleteFile (updates->tempPath);
 
                     updates->previousFile = NULL;
                     updates->state = STATE_INSTALLED;
