@@ -62,15 +62,22 @@ VOID CreateFoldersForPath (_TCHAR *path)
 
 BOOL MyCopyFile (_TCHAR *src, _TCHAR *dest)
 {
+    int err = 0;
     HANDLE hSrc = NULL, hDest = NULL;
 
     hSrc = CreateFile (src, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (hSrc == INVALID_HANDLE_VALUE)
+    {
+        err = GetLastError();
         goto failure;
+    }
 
     hDest = CreateFile (dest, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     if (hDest == INVALID_HANDLE_VALUE)
+    {
+        err = GetLastError();
         goto failure;
+    }
 
     BYTE buff[65536];
     DWORD read, wrote;
@@ -78,13 +85,19 @@ BOOL MyCopyFile (_TCHAR *src, _TCHAR *dest)
     for (;;)
     {
         if (!ReadFile (hSrc, buff, sizeof(buff), &read, NULL))
+        {
+            err = GetLastError();
             goto failure;
+        }
 
         if (read == 0)
             break;
 
         if (!WriteFile (hDest, buff, read, &wrote, NULL))
+        {
+            err = GetLastError();
             goto failure;
+        }
 
         if (wrote != read)
             goto failure;
@@ -93,13 +106,16 @@ BOOL MyCopyFile (_TCHAR *src, _TCHAR *dest)
     CloseHandle (hSrc);
     CloseHandle (hDest);
 
+    if (err)
+        SetLastError (err);
+
     return TRUE;
 
 failure:
-    if (hSrc)
+    if (hSrc != INVALID_HANDLE_VALUE)
         CloseHandle (hSrc);
     
-    if (hDest)
+    if (hDest != INVALID_HANDLE_VALUE)
         CloseHandle (hDest);
 
     return FALSE;
@@ -543,15 +559,32 @@ DWORD WINAPI UpdateThread (VOID *arg)
                     StringCbCopy(oldFileRenamedPath, sizeof(oldFileRenamedPath), updates->outputPath);
                     StringCbCat(oldFileRenamedPath, sizeof(oldFileRenamedPath), _T(".old"));
 
-                    if (!MoveFileEx(updates->outputPath, oldFileRenamedPath, MOVEFILE_REPLACE_EXISTING))
+                    if (!MyCopyFile(updates->outputPath, oldFileRenamedPath))
                     {
-                        Status (_T("Update failed: Couldn't move existing %s (error %d)"), updates->outputPath, GetLastError());
+                        Status (_T("Update failed: Couldn't backup %s (error %d)"), updates->outputPath, GetLastError());
                         goto failure;
                     }
 
                     if (!MyCopyFile(updates->tempPath, updates->outputPath))
                     {
-                        Status (_T("Update failed: Couldn't move updated %s (error %d)"), updates->outputPath, GetLastError());
+                        _TCHAR baseName[MAX_PATH];
+
+                        int is_sharing_violation = (GetLastError() == ERROR_SHARING_VIOLATION);
+
+                        StringCbCopy (baseName, sizeof(baseName), updates->outputPath);
+                        p = _tcsrchr (baseName, '/');
+                        if (p)
+                        {
+                            p[0] = '\0';
+                            p++;
+                        }
+                        else
+                            p = baseName;
+
+                        if (is_sharing_violation)
+                            Status (_T("Update failed: %s is still in use. Close all programs and try again."), p);
+                        else
+                            Status (_T("Update failed: Couldn't update %s (error %d)"), p, GetLastError());
                         goto failure;
                     }
 
