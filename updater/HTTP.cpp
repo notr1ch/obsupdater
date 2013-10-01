@@ -32,7 +32,7 @@ BOOL HTTPGetFile (const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *ext
     if (urlComponents.nPort == 443)
         secure = TRUE;
 
-    hSession = WinHttpOpen(_T("OBS Updater/1.1"), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    hSession = WinHttpOpen(_T("OBS Updater/1.2"), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession)
     {
         *responseCode = -1;
