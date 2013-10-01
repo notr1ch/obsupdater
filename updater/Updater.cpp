@@ -18,6 +18,8 @@
 
 #include "Updater.h"
 
+CRITICAL_SECTION updateMutex;
+
 HANDLE cancelRequested;
 HANDLE updateThread;
 HINSTANCE hinstMain;
@@ -27,8 +29,11 @@ HCRYPTPROV hProvider;
 BOOL bExiting;
 BOOL updateFailed = FALSE;
 
+BOOL downloadThreadFailure = FALSE;
+
 int totalFileSize = 0;
 int completedFileSize = 0;
+int completedUpdates = 0;
 
 VOID Status (const _TCHAR *fmt, ...)
 {
@@ -223,6 +228,128 @@ BOOL IsSafePath (_TCHAR * path)
     return TRUE;
 }
 
+DWORD WINAPI DownloadWorkerThread (VOID *arg)
+{
+    BOOL foundWork;
+    update_t *updates = (update_t *)arg;
+
+    for (;;)
+    {
+        foundWork = FALSE;
+
+        EnterCriticalSection (&updateMutex);
+
+        while (updates->next)
+        {
+            int responseCode;
+
+            if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
+            {
+                LeaveCriticalSection (&updateMutex);
+                return 1;
+            }
+
+            updates = updates->next;
+
+            if (updates->state != STATE_PENDING_DOWNLOAD)
+                continue;
+
+            updates->state = STATE_DOWNLOADING;
+
+            LeaveCriticalSection (&updateMutex);
+
+            foundWork = TRUE;
+
+            if (downloadThreadFailure)
+                return 1;
+
+            Status (_T("Downloading %s"), updates->outputPath);
+
+            if (!HTTPGetFile(updates->URL, updates->tempPath, _T("Accept-Encoding: gzip"), &responseCode))
+            {
+                downloadThreadFailure = TRUE;
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: Could not download %s (error code %d)"), updates->outputPath, responseCode);
+                return 1;
+            }
+
+            if (responseCode != 200)
+            {
+                downloadThreadFailure = TRUE;
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: %s (error code %d)"), updates->outputPath, responseCode);
+                return 1;
+            }
+
+            BYTE downloadHash[20];
+            if (!CalculateFileHash(updates->tempPath, downloadHash))
+            {
+                downloadThreadFailure = TRUE;
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: Couldn't verify integrity of %s"), updates->outputPath);
+                return 1;
+            }
+
+            if (memcmp(updates->hash, downloadHash, 20))
+            {
+                downloadThreadFailure = TRUE;
+                DeleteFile (updates->tempPath);
+                Status (_T("Update failed: Integrity check failed on %s"), updates->outputPath);
+                return 1;
+            }
+
+            EnterCriticalSection (&updateMutex);
+
+            updates->state = STATE_DOWNLOADED;
+            completedUpdates++;
+
+            LeaveCriticalSection (&updateMutex);
+        }
+
+        if (!foundWork)
+        {
+            LeaveCriticalSection (&updateMutex);
+            break;
+        }
+
+        if (downloadThreadFailure)
+            return 1;
+    }
+
+    return 0;
+}
+
+BOOL RunDownloadWorkers (int num, update_t *updates)
+{
+    DWORD threadID;
+    HANDLE *handles;
+
+    InitializeCriticalSection (&updateMutex);
+
+    handles = (HANDLE *)malloc (sizeof(*handles) * num);
+    if (!handles)
+        return FALSE;
+
+    for (int i = 0; i < num; i++)
+    {
+        handles[i] = CreateThread (NULL, 0, DownloadWorkerThread, updates, 0, &threadID);
+        if (!handles[i])
+            return FALSE;
+    }
+
+    WaitForMultipleObjects (num, handles, TRUE, INFINITE);
+
+    for (int i = 0; i < num; i++)
+    {
+        DWORD exitCode;
+        GetExitCodeThread (handles[i], &exitCode);
+        if (exitCode != 0)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
 DWORD WINAPI UpdateThread (VOID *arg)
 {
     DWORD ret = 1;
@@ -235,9 +362,19 @@ DWORD WINAPI UpdateThread (VOID *arg)
     hObsMutex = OpenMutex(SYNCHRONIZE, FALSE, TEXT("OBSMutex"));
     if (hObsMutex)
     {
-        WaitForSingleObject(hObsMutex, INFINITE);
-        ReleaseMutex (hObsMutex);
+        HANDLE hWait[2];
+        hWait[0] = hObsMutex;
+        hWait[1] = cancelRequested;
+
+        int i = WaitForMultipleObjects(2, hWait, FALSE, INFINITE);
+
+        if (i == WAIT_OBJECT_0)
+            ReleaseMutex (hObsMutex);
+
         CloseHandle (hObsMutex);
+
+        if (i == WAIT_OBJECT_0 + 1)
+            goto failure;
     }
 
     if (!CryptAcquireContext(&hProvider, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
@@ -355,7 +492,6 @@ DWORD WINAPI UpdateThread (VOID *arg)
     json_t *package;
 
     int totalUpdates = 0;
-    int completedUpdates = 0;
 
     json_object_foreach (root, packageName, package)
     {
@@ -495,48 +631,8 @@ DWORD WINAPI UpdateThread (VOID *arg)
     if (totalUpdates)
     {
         updates = &updateList;
-        while (updates->next)
-        {
-            int responseCode;
-
-            if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
-                goto failure;
-
-            updates = updates->next;
-            Status (_T("Downloading %s"), updates->outputPath);
-
-            if (!HTTPGetFile(updates->URL, updates->tempPath, _T("Accept-Encoding: gzip"), &responseCode))
-            {
-                DeleteFile (updates->tempPath);
-                Status (_T("Update failed: Could not download %s (error code %d)"), updates->outputPath, responseCode);
-                goto failure;
-            }
-
-            if (responseCode != 200)
-            {
-                DeleteFile (updates->tempPath);
-                Status (_T("Update failed: %s (error code %d)"), updates->outputPath, responseCode);
-                goto failure;
-            }
-
-            BYTE downloadHash[20];
-            if (!CalculateFileHash(updates->tempPath, downloadHash))
-            {
-                DeleteFile (updates->tempPath);
-                Status (_T("Update failed: Couldn't verify integrity of %s"), updates->outputPath);
-                goto failure;
-            }
-
-            if (memcmp(updates->hash, downloadHash, 20))
-            {
-                DeleteFile (updates->tempPath);
-                Status (_T("Update failed: Integrity check failed on %s"), updates->outputPath);
-                goto failure;
-            }
-
-            updates->state = STATE_DOWNLOADED;
-            completedUpdates++;
-        }
+        if (!RunDownloadWorkers (4, updates))
+            goto failure;
 
         //----------------
         //Install updates
