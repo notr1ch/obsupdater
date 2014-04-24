@@ -57,9 +57,14 @@ BOOL HTTPGetFile (const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *ext
 
     // End the request.
     if (bResults)
+    {
         bResults = WinHttpReceiveResponse(hRequest, NULL);
+    }
     else
+    {
+        *responseCode = GetLastError ();
         goto failure;
+    }
 
     TCHAR encoding[64];
     DWORD encodingLen;
