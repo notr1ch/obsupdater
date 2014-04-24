@@ -922,13 +922,14 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
             shExInfo.lpParameters = lpCmdLine;                  // Additional parameters
             shExInfo.lpDirectory = cwd;
             shExInfo.nShow = SW_SHOWNORMAL;
-            shExInfo.hInstApp = 0;  
+            shExInfo.hInstApp = 0;
 
             if (ShellExecuteEx(&shExInfo))
             {
                 DWORD exitCode;
 
                 WaitForSingleObject (shExInfo.hProcess, INFINITE);
+
                 if (GetExitCodeProcess (shExInfo.hProcess, &exitCode))
                 {
                     if (exitCode == 1)
@@ -952,9 +953,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
         hwndMain = CreateDialog(hInstance, MAKEINTRESOURCE(IDD_UPDATEDIALOG), NULL, DialogProc);
 
         if (hwndMain)
-            ShowWindow(hwndMain, SW_SHOWNORMAL);
+            ShowWindow (hwndMain, SW_SHOWNORMAL);
         else
-            return 1;
+            return -1;
 
         cancelRequested = CreateEvent (NULL, TRUE, FALSE, NULL);
 
