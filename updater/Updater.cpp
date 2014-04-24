@@ -35,6 +35,50 @@ int totalFileSize = 0;
 int completedFileSize = 0;
 int completedUpdates = 0;
 
+//http://www.codeproject.com/Articles/320748/Haephrati-Elevating-during-runtime
+BOOL IsAppRunningAsAdminMode()
+{
+    BOOL fIsRunAsAdmin = FALSE;
+    DWORD dwError = ERROR_SUCCESS;
+    PSID pAdministratorsGroup = NULL;
+
+    // Allocate and initialize a SID of the administrators group.
+    SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
+    if (!AllocateAndInitializeSid(
+        &NtAuthority, 
+        2, 
+        SECURITY_BUILTIN_DOMAIN_RID, 
+        DOMAIN_ALIAS_RID_ADMINS, 
+        0, 0, 0, 0, 0, 0, 
+        &pAdministratorsGroup))
+    {
+        dwError = GetLastError();
+        goto Cleanup;
+    }
+
+    // Determine whether the SID of administrators group is enabled in 
+    // the primary access token of the process.
+    if (!CheckTokenMembership(NULL, pAdministratorsGroup, &fIsRunAsAdmin))
+    {
+        dwError = GetLastError();
+        goto Cleanup;
+    }
+
+Cleanup:
+    // Centralized cleanup for all allocated resources.
+    if (pAdministratorsGroup)
+    {
+        FreeSid(pAdministratorsGroup);
+        pAdministratorsGroup = NULL;
+    }
+
+    // Throw the error if something failed in the function.
+    if (ERROR_SUCCESS != dwError)
+        return FALSE;
+
+    return fIsRunAsAdmin;
+}
+
 VOID Status (const _TCHAR *fmt, ...)
 {
     _TCHAR str[512];
@@ -122,6 +166,9 @@ failure:
     
     if (hDest != INVALID_HANDLE_VALUE)
         CloseHandle (hDest);
+
+    if (err)
+        SetLastError (err);
 
     return FALSE;
 }
@@ -657,7 +704,24 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
                     if (!MyCopyFile(updates->outputPath, oldFileRenamedPath))
                     {
-                        Status (_T("Update failed: Couldn't backup %s (error %d)"), updates->outputPath, GetLastError());
+                        _TCHAR baseName[MAX_PATH];
+
+                        int is_sharing_violation = (GetLastError() == ERROR_SHARING_VIOLATION);
+
+                        StringCbCopy (baseName, sizeof(baseName), updates->outputPath);
+                        p = _tcsrchr (baseName, '/');
+                        if (p)
+                        {
+                            p[0] = '\0';
+                            p++;
+                        }
+                        else
+                            p = baseName;
+
+                        if (is_sharing_violation)
+                            Status (_T("Update failed: %s is still in use. Close all programs and try again."), p);
+                        else
+                            Status (_T("Update failed: Couldn't backup %s (error %d)"), p, GetLastError());
                         goto failure;
                     }
 
@@ -793,10 +857,7 @@ VOID LaunchOBS ()
     execInfo.lpDirectory = cwd;
     execInfo.nShow = SW_SHOWNORMAL;
 
-    if (!ShellExecuteEx (&execInfo))
-        Status(_T("Can't launch OBS: Error %d"), GetLastError());
-    else
-        ExitProcess (0);
+    ShellExecuteEx (&execInfo);
 }
 
 INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -805,7 +866,9 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     {
         case WM_INITDIALOG:
             {
-                //SendDlgItemMessage (hwnd, IDC_PROGRESS, PBM_SETRANGE, 0, MAKELPARAM(0, 200));
+                static HICON hMainIcon = LoadIcon (hinstMain, MAKEINTRESOURCE(IDI_ICON1));
+                SendMessage (hwnd, WM_SETICON, ICON_BIG, (LPARAM)hMainIcon);
+                SendMessage (hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hMainIcon);
                 return TRUE;
             }
 
@@ -819,7 +882,7 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                         if (updateFailed)
                             PostQuitMessage(0);
                         else
-                            LaunchOBS ();
+                            PostQuitMessage(1);
                     }
                     else
                     {
@@ -842,33 +905,71 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 {
     INITCOMMONCONTROLSEX icce;
 
-    hinstMain = hInstance;
-
-    icce.dwSize = sizeof(icce);
-    icce.dwICC = ICC_PROGRESS_CLASS;
-
-    InitCommonControlsEx(&icce);
-
-    hwndMain = CreateDialog(hInstance, MAKEINTRESOURCE(IDD_UPDATEDIALOG), NULL, DialogProc);
-
-    if (hwndMain)
-        ShowWindow(hwndMain, SW_SHOWNORMAL);
-    else
-        return 1;
-
-    cancelRequested = CreateEvent (NULL, TRUE, FALSE, NULL);
-
-    updateThread = CreateThread (NULL, 0, UpdateThread, lpCmdLine, 0, NULL);
-
-    MSG msg;
-    while(GetMessage(&msg, NULL, 0, 0))
+    if (!IsAppRunningAsAdminMode())
     {
-        if(!IsDialogMessage(hwndMain, &msg))
+        _TCHAR myPath[MAX_PATH];
+        if (GetModuleFileName (NULL, myPath, _countof(myPath)-1))
         {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-    }
+            _TCHAR cwd[MAX_PATH];
+            GetCurrentDirectory(_countof(cwd)-1, cwd);
 
-    return 0;
+            SHELLEXECUTEINFO shExInfo = {0};
+            shExInfo.cbSize = sizeof(shExInfo);
+            shExInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
+            shExInfo.hwnd = 0;
+            shExInfo.lpVerb = _T("runas");                // Operation to perform
+            shExInfo.lpFile = myPath;       // Application to start    
+            shExInfo.lpParameters = lpCmdLine;                  // Additional parameters
+            shExInfo.lpDirectory = cwd;
+            shExInfo.nShow = SW_SHOWNORMAL;
+            shExInfo.hInstApp = 0;  
+
+            if (ShellExecuteEx(&shExInfo))
+            {
+                DWORD exitCode;
+
+                WaitForSingleObject (shExInfo.hProcess, INFINITE);
+                if (GetExitCodeProcess (shExInfo.hProcess, &exitCode))
+                {
+                    if (exitCode == 1)
+                        LaunchOBS ();
+                }
+                CloseHandle (shExInfo.hProcess);
+            }
+        }
+
+        return 0;
+    }
+    else
+    {
+        hinstMain = hInstance;
+
+        icce.dwSize = sizeof(icce);
+        icce.dwICC = ICC_PROGRESS_CLASS;
+
+        InitCommonControlsEx(&icce);
+
+        hwndMain = CreateDialog(hInstance, MAKEINTRESOURCE(IDD_UPDATEDIALOG), NULL, DialogProc);
+
+        if (hwndMain)
+            ShowWindow(hwndMain, SW_SHOWNORMAL);
+        else
+            return 1;
+
+        cancelRequested = CreateEvent (NULL, TRUE, FALSE, NULL);
+
+        updateThread = CreateThread (NULL, 0, UpdateThread, lpCmdLine, 0, NULL);
+
+        MSG msg;
+        while(GetMessage(&msg, NULL, 0, 0))
+        {
+            if(!IsDialogMessage(hwndMain, &msg))
+            {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+
+        return msg.wParam;
+    }
 }

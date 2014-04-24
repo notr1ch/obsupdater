@@ -81,7 +81,7 @@
     <Link>
       <AdditionalDependencies>jansson.lib;comctl32.lib;shell32.lib;winhttp.lib;zlib.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>../jansson\win32\vs2010\Output\Release;../zlib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -97,6 +97,7 @@
     <ClInclude Include="..\jansson-2.4\src\jansson.h" />
     <ClInclude Include="..\jansson-2.4\src\jansson_config.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="stdint.h" />
     <ClInclude Include="Updater.h" />
   </ItemGroup>
   <ItemGroup>
