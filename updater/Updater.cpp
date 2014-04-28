@@ -907,6 +907,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 
     if (!IsAppRunningAsAdminMode())
     {
+        HANDLE hLowMutex = CreateMutex (NULL, TRUE, _T("OBSUpdaterRunningAsNonAdminUser"));
         _TCHAR myPath[MAX_PATH];
         if (GetModuleFileName (NULL, myPath, _countof(myPath)-1))
         {
@@ -921,14 +922,15 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
             shExInfo.lpFile = myPath;       // Application to start    
             shExInfo.lpParameters = lpCmdLine;                  // Additional parameters
             shExInfo.lpDirectory = cwd;
-            shExInfo.nShow = SW_SHOWNORMAL;
+            shExInfo.nShow = SW_NORMAL;
             shExInfo.hInstApp = 0;
+
+            //annoyingly the actual elevated updater will disappear behind other windows :(
+            AllowSetForegroundWindow (ASFW_ANY);
 
             if (ShellExecuteEx(&shExInfo))
             {
                 DWORD exitCode;
-
-                WaitForSingleObject (shExInfo.hProcess, INFINITE);
 
                 if (GetExitCodeProcess (shExInfo.hProcess, &exitCode))
                 {
@@ -937,6 +939,12 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
                 }
                 CloseHandle (shExInfo.hProcess);
             }
+        }
+
+        if (hLowMutex)
+        {
+            ReleaseMutex (hLowMutex);
+            CloseHandle (hLowMutex);
         }
 
         return 0;
@@ -952,10 +960,11 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 
         hwndMain = CreateDialog(hInstance, MAKEINTRESOURCE(IDD_UPDATEDIALOG), NULL, DialogProc);
 
-        if (hwndMain)
-            ShowWindow (hwndMain, SW_SHOWNORMAL);
-        else
+        if (!hwndMain)
             return -1;
+
+        ShowWindow (hwndMain, SW_SHOWNORMAL);
+        SetForegroundWindow (hwndMain);
 
         cancelRequested = CreateEvent (NULL, TRUE, FALSE, NULL);
 
@@ -970,6 +979,12 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
                 DispatchMessage(&msg);
             }
         }
+
+        //there is no non-elevated process waiting for us if UAC is disabled
+        HANDLE hMutex = OpenMutex (SYNCHRONIZE, FALSE, _T("OBSUpdaterRunningAsNonAdminUser"));
+
+        if (msg.wParam == 1 && !hMutex)
+            LaunchOBS ();
 
         return msg.wParam;
     }
