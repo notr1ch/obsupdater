@@ -64,7 +64,6 @@ VOID HashToString (BYTE *in, TCHAR *out);
 VOID StringToHash (TCHAR *in, BYTE *out);
 
 BOOL CalculateFileHash (TCHAR *path, BYTE *hash);
-BOOL VerifyDigitalSignature(BYTE *buff, DWORD len, BYTE *signature, DWORD signatureLen);
 
 BOOL ApplyPatch(LPCTSTR patchFile, LPCTSTR targetFile);
 
