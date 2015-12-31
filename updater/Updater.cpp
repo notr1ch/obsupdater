@@ -112,7 +112,7 @@ VOID CreateFoldersForPath (_TCHAR *path)
 BOOL MyCopyFile (_TCHAR *src, _TCHAR *dest)
 {
     int err = 0;
-    HANDLE hSrc = NULL, hDest = NULL;
+    HANDLE hSrc = INVALID_HANDLE_VALUE, hDest = INVALID_HANDLE_VALUE;
 
     hSrc = CreateFile (src, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (hSrc == INVALID_HANDLE_VALUE)
@@ -219,8 +219,12 @@ VOID DestroyUpdateList (update_t *updates)
             free (updates->previousFile);
         if (updates->tempPath)
             free (updates->tempPath);
-        if (updates->URL)
-            free (updates->URL);
+        if (updates->sourceURL)
+            free (updates->sourceURL);
+        if (updates->basename)
+            free (updates->basename);
+        if (updates->packageName)
+            free (updates->packageName);
 
         free (updates);
 
@@ -279,6 +283,22 @@ DWORD WINAPI DownloadWorkerThread (VOID *arg)
 {
     BOOL foundWork;
     update_t *updates = (update_t *)arg;
+    
+    HINTERNET hSession = WinHttpOpen(_T("OBS Updater/2.1"), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession)
+    {
+        downloadThreadFailure = TRUE;
+        Status(_T("Update failed: Couldn't open obsproject.com"));
+        return 1;
+    }
+
+    HINTERNET hConnect = WinHttpConnect(hSession, _T("obsproject.com"), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!hConnect)
+    {
+        downloadThreadFailure = TRUE;
+        Status (_T("Update failed: Couldn't connect to obsproject.com"));
+        return 1;
+    }
 
     for (;;)
     {
@@ -312,7 +332,7 @@ DWORD WINAPI DownloadWorkerThread (VOID *arg)
 
             Status (_T("Downloading %s"), updates->outputPath);
 
-            if (!HTTPGetFile(updates->URL, updates->tempPath, _T("Accept-Encoding: gzip"), &responseCode))
+            if (!HTTPGetFile (hSession, hConnect, updates->sourceURL, updates->tempPath, _T("Accept-Encoding: gzip"), &responseCode))
             {
                 downloadThreadFailure = TRUE;
                 DeleteFile (updates->tempPath);
@@ -324,7 +344,7 @@ DWORD WINAPI DownloadWorkerThread (VOID *arg)
             {
                 downloadThreadFailure = TRUE;
                 DeleteFile (updates->tempPath);
-                Status (_T("Update failed: %s (error code %d)"), updates->outputPath, responseCode);
+                Status (_T("Update failed: Could not download %s (error code %d)"), updates->outputPath, responseCode);
                 return 1;
             }
 
@@ -362,6 +382,12 @@ DWORD WINAPI DownloadWorkerThread (VOID *arg)
         if (downloadThreadFailure)
             return 1;
     }
+
+    if (hSession)
+        WinHttpCloseHandle(hSession);
+
+    if (hConnect)
+        WinHttpCloseHandle(hConnect);
 
     return 0;
 }
@@ -416,15 +442,15 @@ DWORD WINAPI UpdateThread (VOID *arg)
         int i = WaitForMultipleObjects(2, hWait, FALSE, INFINITE);
 
         if (i == WAIT_OBJECT_0)
-            ReleaseMutex (hObsMutex);
+            ReleaseMutex(hObsMutex);
 
-        CloseHandle (hObsMutex);
+        CloseHandle(hObsMutex);
 
         if (i == WAIT_OBJECT_0 + 1)
             goto failure;
     }
 
-    if (!CryptAcquireContext(&hProvider, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+    if (!CryptAcquireContext(&hProvider, NULL, MS_ENH_RSA_AES_PROV, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
     {
         SetDlgItemText(hwndMain, IDC_STATUS, TEXT("Update failed: CryptAcquireContext failure"));
         goto failure;
@@ -464,15 +490,15 @@ DWORD WINAPI UpdateThread (VOID *arg)
     else
     {
         SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, lpAppDataPath);
-        StringCbCat (lpAppDataPath, sizeof(lpAppDataPath), TEXT("\\OBS"));        
+        StringCbCat(lpAppDataPath, sizeof(lpAppDataPath), TEXT("\\OBS"));
     }
 
-    StringCbPrintf (manifestPath, sizeof(manifestPath), TEXT("%s\\updates\\packages.xconfig"), lpAppDataPath);
-    StringCbPrintf (tempPath, sizeof(tempPath), TEXT("%s\\updates\\temp"), lpAppDataPath);
+    StringCbPrintf(manifestPath, sizeof(manifestPath), TEXT("%s\\updates\\packages.xconfig"), lpAppDataPath);
+    StringCbPrintf(tempPath, sizeof(tempPath), TEXT("%s\\updates\\temp"), lpAppDataPath);
 
     CreateDirectory(tempPath, NULL);
 
-    HANDLE hManifest = CreateFile (manifestPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE hManifest = CreateFile(manifestPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (hManifest == INVALID_HANDLE_VALUE)
     {
         Status(TEXT("Update failed: Could not open update manifest"));
@@ -487,7 +513,7 @@ DWORD WINAPI UpdateThread (VOID *arg)
         return 1;
     }
 
-    CHAR *buff = (CHAR *)malloc ((size_t)manifestfileSize.QuadPart + 1);
+    CHAR *buff = (CHAR *)malloc((size_t)manifestfileSize.QuadPart + 1);
     if (!buff)
     {
         Status(TEXT("Update failed: Could not allocate memory for update manifest"));
@@ -496,14 +522,14 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
     DWORD read;
 
-    if (!ReadFile (hManifest, buff, (DWORD)manifestfileSize.QuadPart, &read, NULL))
+    if (!ReadFile(hManifest, buff, (DWORD)manifestfileSize.QuadPart, &read, NULL))
     {
-        CloseHandle (hManifest);
+        CloseHandle(hManifest);
         Status(TEXT("Update failed: Error reading update manifest"));
         goto failure;
     }
 
-    CloseHandle (hManifest);
+    CloseHandle(hManifest);
 
     if (read != manifestfileSize.QuadPart)
     {
@@ -512,6 +538,60 @@ DWORD WINAPI UpdateThread (VOID *arg)
     }
 
     buff[read] = 0;
+
+    unsigned char test_sig[] = {
+        0x5c, 0x47, 0x78, 0xf5, 0x11, 0xb4, 0x27, 0x9f, 0xfe, 0x3c, 0xd1, 0xd7,
+        0xd4, 0xb4, 0x4d, 0x09, 0x9f, 0x6c, 0x07, 0x37, 0x90, 0x9b, 0xd1, 0x76,
+        0xd5, 0x8c, 0x32, 0x15, 0xf7, 0x7d, 0xad, 0x79, 0x71, 0x9b, 0x04, 0x7b,
+        0x49, 0x22, 0x2a, 0x4b, 0x9d, 0x0d, 0x8a, 0x3f, 0x25, 0xa9, 0x34, 0x7d,
+        0x4d, 0xad, 0x2f, 0xcc, 0x37, 0xfb, 0xec, 0x54, 0x44, 0x54, 0xcc, 0x5f,
+        0xbb, 0x51, 0xe0, 0x20, 0xc3, 0x0d, 0xa0, 0xf5, 0x83, 0xfa, 0xfb, 0xc8,
+        0x8f, 0x26, 0x6e, 0x7c, 0x59, 0xb5, 0xb3, 0x08, 0x9f, 0xc2, 0xce, 0x61,
+        0x2a, 0x2c, 0xd4, 0x84, 0x91, 0x6d, 0x39, 0x90, 0xc5, 0xce, 0x74, 0xb8,
+        0xba, 0x69, 0xf2, 0xe6, 0x97, 0x16, 0x25, 0xd1, 0x70, 0xc3, 0x46, 0xc3,
+        0x58, 0x1a, 0x4a, 0x6f, 0x04, 0xb8, 0xd4, 0x11, 0xdc, 0x51, 0x8b, 0x83,
+        0xe7, 0x53, 0xb4, 0x6b, 0x20, 0xa6, 0xac, 0x9d, 0xdc, 0x8b, 0x2e, 0x5f,
+        0xc8, 0x15, 0xc4, 0xf7, 0x51, 0x22, 0xf4, 0xed, 0xf8, 0xa0, 0x42, 0x17,
+        0xae, 0x67, 0x0e, 0xc9, 0x5c, 0x67, 0x21, 0xa1, 0x3d, 0x65, 0xdb, 0xc2,
+        0x3d, 0xc6, 0xa3, 0x61, 0x1a, 0x40, 0x40, 0x70, 0x96, 0x45, 0x1b, 0x15,
+        0x3a, 0x9e, 0xab, 0x00, 0xc5, 0x3e, 0xf0, 0x64, 0x80, 0x55, 0xa4, 0x94,
+        0x73, 0x3c, 0x8a, 0xec, 0xe4, 0x4c, 0x83, 0x6b, 0xde, 0x22, 0xe7, 0x05,
+        0x58, 0xb0, 0xd3, 0x5a, 0xf7, 0x84, 0x25, 0x15, 0x5b, 0x70, 0x5d, 0xc4,
+        0x9d, 0x44, 0xd6, 0x3f, 0x9f, 0x8e, 0x95, 0x26, 0x31, 0x96, 0x44, 0x86,
+        0xe5, 0x10, 0x23, 0x0b, 0x0c, 0x66, 0x24, 0xf6, 0xb1, 0x22, 0xde, 0x45,
+        0x11, 0x7c, 0xa2, 0x39, 0xe0, 0xf3, 0xea, 0x5d, 0x2d, 0x8c, 0x28, 0xa8,
+        0x51, 0x98, 0xec, 0xcd, 0xbe, 0x63, 0x5d, 0x93, 0x8e, 0x30, 0x15, 0xe4,
+        0xea, 0xe7, 0xb5, 0x4b, 0xfe, 0x49, 0x54, 0x5f, 0xbb, 0xb9, 0xf3, 0x89,
+        0x2b, 0x2c, 0x02, 0xff, 0xb3, 0x5c, 0xd6, 0x79, 0x3f, 0x17, 0x76, 0x8e,
+        0x14, 0xf4, 0x27, 0xee, 0xc8, 0xaf, 0x91, 0xde, 0x18, 0xae, 0x19, 0xec,
+        0x35, 0xed, 0xa7, 0xaf, 0x9b, 0xd3, 0x84, 0x12, 0xf2, 0x19, 0x43, 0x94,
+        0xb4, 0x53, 0x72, 0x0a, 0x75, 0x56, 0x60, 0x8a, 0x5d, 0xad, 0xc5, 0xbb,
+        0x63, 0x28, 0xf6, 0x91, 0x3c, 0x6f, 0x75, 0x31, 0x67, 0x9c, 0x39, 0x27,
+        0x27, 0xa6, 0xf0, 0xb1, 0xe6, 0xc5, 0xc2, 0x46, 0x92, 0xb4, 0x3e, 0xce,
+        0x19, 0x2f, 0xc7, 0xa9, 0x43, 0xd5, 0xbe, 0x9a, 0x1f, 0x3a, 0x47, 0x2d,
+        0xbe, 0xa1, 0x0a, 0xe0, 0x55, 0xba, 0x7d, 0xb1, 0x54, 0x31, 0x3a, 0x3a,
+        0x2b, 0x1f, 0x3f, 0xf5, 0xea, 0x07, 0xeb, 0x92, 0xc8, 0x6b, 0x3e, 0xeb,
+        0x3d, 0xd8, 0xa7, 0xff, 0xad, 0x61, 0x82, 0xf3, 0x48, 0x51, 0x99, 0xf5,
+        0x48, 0x9c, 0xa5, 0x7f, 0xde, 0x24, 0xd7, 0x34, 0x85, 0xdc, 0x68, 0x1d,
+        0xcc, 0xa0, 0x2c, 0xd2, 0xb5, 0xf9, 0xe8, 0xba, 0x7e, 0x67, 0xfe, 0xb6,
+        0xa6, 0x76, 0x29, 0x1c, 0xf2, 0x2f, 0x55, 0x47, 0x1e, 0x8a, 0xf7, 0xe7,
+        0x5f, 0x67, 0xe9, 0x45, 0x8b, 0xb4, 0x10, 0xaf, 0x06, 0xb0, 0xc2, 0xdc,
+        0x4b, 0x35, 0xfc, 0x2f, 0x8b, 0xe9, 0x37, 0x83, 0xba, 0x40, 0x90, 0x28,
+        0x37, 0x0e, 0xe1, 0x1b, 0xb9, 0x3b, 0x05, 0x78, 0xb6, 0x5e, 0xd5, 0x26,
+        0xd0, 0xe0, 0x9c, 0x30, 0x30, 0x73, 0x64, 0x30, 0x9a, 0xee, 0xe7, 0x16,
+        0xf2, 0x1f, 0xdd, 0x8c, 0xfc, 0x3e, 0x6f, 0x64, 0x1b, 0x1f, 0xc3, 0xf8,
+        0xc3, 0x58, 0x80, 0xaf, 0x59, 0xfc, 0x89, 0xf0, 0x18, 0x3e, 0xe7, 0xba,
+        0xe7, 0x6b, 0xd6, 0x8b, 0xa0, 0xbe, 0x2c, 0x16, 0xfe, 0x5f, 0x98, 0x51,
+        0x82, 0x1f, 0x08, 0xd5, 0x93, 0x93, 0xb3, 0xf0
+    };
+    unsigned int test_sig_len = 512;
+
+
+    if (!VerifyDigitalSignature((BYTE *)buff, read, test_sig, test_sig_len))
+    {
+        Status(_T("Update failed: Invalid signature"));
+        goto failure;
+    }
 
     json_t *root;
     json_error_t error;
@@ -595,6 +675,9 @@ DWORD WINAPI UpdateThread (VOID *arg)
             if (strlen(hashStr) != 40)
                 continue;
 
+            if (!json_is_string(source))
+                continue;
+
             const char *sourceStr = json_string_value(source);
             if (strncmp (sourceStr, "https://obsproject.com/", 23))
                 continue;
@@ -641,16 +724,22 @@ DWORD WINAPI UpdateThread (VOID *arg)
             StringCbPrintf(tempFilePath, sizeof(tempFilePath), _T("%s\\%s"), tempPath, updateHashStr);
 
             BYTE existingHash[20];
+            _TCHAR fileHashStr[41];
+            int has_hash;
 
             //We don't really care if this fails, it's just to avoid wasting bandwidth by downloading unmodified files
             if (CalculateFileHash(fullPath, existingHash))
             {
-                _TCHAR fileHashStr[41];
-
                 HashToString(existingHash, fileHashStr);
 
                 if (!_tcscmp(fileHashStr, updateHashStr))
                     continue;
+
+                has_hash = 1;
+            }
+            else
+            {
+                has_hash = 0;
             }
 
             updates->next = (update_t *)malloc(sizeof(*updates));
@@ -659,11 +748,18 @@ DWORD WINAPI UpdateThread (VOID *arg)
             updates->next = NULL;
             updates->fileSize = fileSize;
             updates->previousFile = NULL;
+            updates->basename = _tcsdup(updateFileName);
             updates->outputPath = _tcsdup(fullPath);
             updates->tempPath = _tcsdup(tempFilePath);
-            updates->URL = _tcsdup(sourceURL);
+            updates->sourceURL = _tcsdup(sourceURL);
+            updates->packageName = _strdup(packageName);
             updates->state = STATE_PENDING_DOWNLOAD;
+            updates->patchable = 0;
             StringToHash(updateHashStr, updates->hash);
+            
+            updates->has_hash = has_hash;
+            if (has_hash)
+                StringToHash(fileHashStr, updates->my_hash);
 
             totalUpdates++;
             totalFileSize += fileSize;
@@ -672,13 +768,179 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
     json_decref(root);
 
-    //-------------------
-    //Download Updates
-    //-------------------
     if (totalUpdates)
     {
+        json_t *req, *files, *packageFiles;
+        _TCHAR hash_string[41];
+
+        char *lastPackage = "";
+        
+        req = json_object();
+        files = json_object();
+
+        json_object_set(req, "packages", files);
+
+        //----------------
+        //Compute hashes
+        //----------------
         updates = &updateList;
-        if (!RunDownloadWorkers (4, updates))
+        while (updates->next)
+        {
+            char whash_string[41];
+            char woutputPath[MAX_PATH];
+
+            updates = updates->next;
+
+            if (strcmp(lastPackage, updates->packageName))
+            {
+                packageFiles = json_object();
+                json_object_set(files, updates->packageName, packageFiles);
+                lastPackage = updates->packageName;
+            }
+
+            if (!updates->has_hash)
+                continue;
+
+            HashToString(updates->my_hash, hash_string);
+            if (!_tcscmp(hash_string, _T("0000000000000000000000000000000000000000")))
+                continue;
+
+            WideCharToMultiByte(CP_UTF8, 0, hash_string, -1, whash_string, sizeof(whash_string), NULL, NULL);
+            WideCharToMultiByte(CP_UTF8, 0, updates->basename, -1, woutputPath, sizeof(whash_string), NULL, NULL);
+
+            //info = json_pack("{s:s,s:s}", "path", woutputPath, "hash", whash_string);
+            json_t *value = json_string(whash_string);
+            json_object_set(packageFiles, woutputPath, value);
+
+            //json_array_append(packageFiles, info);
+        }
+
+        //-----------------
+        //Send file hashes
+        //-----------------
+
+        char *post_body = json_dumps(req, JSON_COMPACT);
+
+        BYTE *newManifest;
+        int newManifestLength;
+        int responseCode;
+
+        if (!HTTPPostData(_T("https://obsproject.com/update/getpatchmanifest"), (BYTE *)post_body, strlen(post_body), _T("Accept-Encoding: gzip"), &responseCode, &newManifest, &newManifestLength))
+            goto failure;
+
+        if (responseCode != 200)
+        {
+            Status(_T("Update failed: HTTP/%d while trying to download patch manifest"), responseCode);
+            goto failure;
+        }
+
+        //---------------------
+        //Parse new manifest
+        //---------------------
+        root = json_loads((const char *)newManifest, 0, &error);
+
+        //free(newManifest);
+
+        if (!root)
+        {
+            Status(_T("Update failed: Couldn't parse patch manifest: %S"), error.text);
+            goto failure;
+        }
+
+        if (!json_is_object(root))
+        {
+            Status(_T("Update failed: Invalid patch manifest"));
+            goto failure;
+        }
+
+        const char *patchpackageName;
+        json_t *patchpackage;
+
+        json_object_foreach(root, patchpackageName, patchpackage)
+        {
+            if (!json_is_object(patchpackage))
+            {
+                Status(_T("Update failed: Invalid patch manifest"));
+                goto failure;
+            }
+
+            json_t *value;
+            const char *patchableFilename;
+
+            _TCHAR widePatchableFilename[MAX_PATH];
+            _TCHAR widePatchHash[MAX_PATH];
+            _TCHAR patchHashStr[41];
+
+            json_object_foreach(patchpackage, patchableFilename, value)
+            {
+                if (!json_is_object(value))
+                {
+                    Status(_T("Update failed: Invalid patch manifest"));
+                    goto failure;
+                }
+
+                json_t *hash = json_object_get(value, "hash");
+                if (!json_is_string(hash))
+                    continue;
+
+                const char *patchHash = json_string_value(hash);
+
+                json_t *source = json_object_get(value, "source");
+                if (!json_is_string(source))
+                    continue;
+
+                const char *sourceStr = json_string_value(source);
+                if (strncmp (sourceStr, "https://obsproject.com/", 23))
+                    continue;
+
+                json_t *size = json_object_get(value, "size");
+                if (!json_is_integer(size))
+                    continue;
+
+                int patchSize = (int)json_integer_value(size);
+
+                MultiByteToWideChar(CP_UTF8, 0, patchableFilename, -1, widePatchableFilename, sizeof(widePatchableFilename));
+                MultiByteToWideChar(CP_UTF8, 0, patchHash, -1, widePatchHash, sizeof(widePatchHash));
+
+                updates = &updateList;
+                while (updates->next)
+                {
+                    updates = updates->next;
+                    if (strcmp(updates->packageName, patchpackageName))
+                        continue;
+                    if (_tcscmp(updates->basename, widePatchableFilename))
+                        continue;
+
+                    // Replace the source URL with the patch file and mark it as patchable
+                    updates->patchable = true;
+
+                    free(updates->sourceURL);
+
+                    _TCHAR sourceURL[1024];
+                    if (!MultiByteToWideChar(CP_UTF8, 0, sourceStr, -1, sourceURL, _countof(sourceURL)))
+                        continue;
+
+                    if (!MultiByteToWideChar(CP_UTF8, 0, patchHash, -1, patchHashStr, _countof(patchHashStr)))
+                        continue;
+
+                    StringToHash(patchHashStr, updates->hash);
+
+                    // Re-calculate download size
+                    totalFileSize -= (updates->fileSize - patchSize);
+                    updates->sourceURL = _tcsdup(sourceURL);
+                    updates->fileSize = patchSize;
+
+                    break;
+                }
+
+            }
+        }
+
+        //-------------------
+        //Download Updates
+        //-------------------
+        updates = &updateList;
+        if (!RunDownloadWorkers (2, updates))
             goto failure;
 
         //----------------
@@ -693,7 +955,10 @@ DWORD WINAPI UpdateThread (VOID *arg)
             {
                 updates = updates->next;
 
-                Status (_T("Installing %s..."), updates->outputPath);
+                if (updates->patchable)
+                    Status (_T("Updating %s..."), updates->outputPath);
+                else
+                    Status (_T("Installing %s..."), updates->outputPath);
 
                 //Check if we're replacing an existing file or just installing a new one
                 if (GetFileAttributes(updates->outputPath) != INVALID_FILE_ATTRIBUTES)
@@ -725,11 +990,25 @@ DWORD WINAPI UpdateThread (VOID *arg)
                         goto failure;
                     }
 
-                    if (!MyCopyFile(updates->tempPath, updates->outputPath))
+                    int error_code;
+                    BOOL installed_ok;
+
+                    if (updates->patchable)
+                    {
+                        error_code = ApplyPatch(updates->tempPath, updates->outputPath);
+                        installed_ok = (error_code == 0);
+                    }
+                    else
+                    {
+                        installed_ok = MyCopyFile(updates->tempPath, updates->outputPath);
+                        error_code = GetLastError();
+                    }
+
+                    if (!installed_ok)
                     {
                         _TCHAR baseName[MAX_PATH];
 
-                        int is_sharing_violation = (GetLastError() == ERROR_SHARING_VIOLATION);
+                        int is_sharing_violation = (error_code == ERROR_SHARING_VIOLATION);
 
                         StringCbCopy (baseName, sizeof(baseName), updates->outputPath);
                         p = _tcsrchr (baseName, '/');
@@ -748,13 +1027,18 @@ DWORD WINAPI UpdateThread (VOID *arg)
                         goto failure;
                     }
 
-                    DeleteFile (updates->tempPath);
-
                     updates->previousFile = _tcsdup(oldFileRenamedPath);
                     updates->state = STATE_INSTALLED;
                 }
                 else
                 {
+                    if (updates->patchable)
+                    {
+                        //Uh oh, we thought we could patch something but it's no longer there!
+                        Status(_T("Update failed: Source file %s not found"), updates->outputPath);
+                        goto failure;
+                    }
+
                     //We may be installing into new folders, make sure they exist
                     CreateFoldersForPath (updates->outputPath);
 
@@ -763,8 +1047,6 @@ DWORD WINAPI UpdateThread (VOID *arg)
                         Status (_T("Update failed: Couldn't install %s (error %d)"), updates->outputPath, GetLastError());
                         goto failure;
                     }
-
-                    DeleteFile (updates->tempPath);
 
                     updates->previousFile = NULL;
                     updates->state = STATE_INSTALLED;
@@ -779,6 +1061,10 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
                 if (updates->previousFile)
                     DeleteFile (updates->previousFile);
+
+                //We delete here not above in case of duplicate hashes
+                if (updates->tempPath)
+                    DeleteFile(updates->tempPath);
             }
         }
 
