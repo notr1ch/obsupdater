@@ -150,6 +150,13 @@ functions:
    Returns true for types ``JSON_TRUE`` and ``JSON_FALSE``, and false
    for values of other types and for *NULL*.
 
+.. function:: json_boolean_value(const json_t *json)
+
+   Alias of :func:`json_is_true()`, i.e. returns 1 for ``JSON_TRUE``
+   and 0 otherwise.
+
+   .. versionadded:: 2.7
+
 
 .. _apiref-reference-count:
 
@@ -168,7 +175,7 @@ The following functions are used to manipulate the reference count.
 
 .. function:: json_t *json_incref(json_t *json)
 
-   Increment the reference count of *json* if it's not non-*NULL*.
+   Increment the reference count of *json* if it's not *NULL*.
    Returns *json*.
 
 .. function:: void json_decref(json_t *json)
@@ -292,17 +299,23 @@ String
 ======
 
 Jansson uses UTF-8 as the character encoding. All JSON strings must be
-valid UTF-8 (or ASCII, as it's a subset of UTF-8). Normal null
-terminated C strings are used, so JSON strings may not contain
-embedded null characters. All other Unicode codepoints U+0001 through
-U+10FFFF are allowed.
+valid UTF-8 (or ASCII, as it's a subset of UTF-8). All Unicode
+codepoints U+0000 through U+10FFFF are allowed, but you must use
+length-aware functions if you wish to embed NUL bytes in strings.
 
 .. function:: json_t *json_string(const char *value)
 
    .. refcounting:: new
 
    Returns a new JSON string, or *NULL* on error. *value* must be a
-   valid UTF-8 encoded Unicode string.
+   valid null terminated UTF-8 encoded Unicode string.
+
+.. function:: json_t *json_stringn(const char *value, size_t len)
+
+   .. refcounting:: new
+
+   Like :func:`json_string`, but with explicit length, so *value* may
+   contain null characters or not be null terminated.
 
 .. function:: json_t *json_string_nocheck(const char *value)
 
@@ -311,6 +324,13 @@ U+10FFFF are allowed.
    Like :func:`json_string`, but doesn't check that *value* is valid
    UTF-8. Use this function only if you are certain that this really
    is the case (e.g. you have already checked it by other means).
+
+.. function:: json_t *json_stringn_nocheck(const char *value, size_t len)
+
+   .. refcounting:: new
+
+   Like :func:`json_string_nocheck`, but with explicit length, so
+   *value* may contain null characters or not be null terminated.
 
 .. function:: const char *json_string_value(const json_t *string)
 
@@ -321,11 +341,21 @@ U+10FFFF are allowed.
    the user. It is valid as long as *string* exists, i.e. as long as
    its reference count has not dropped to zero.
 
+.. function:: size_t json_string_length(const json_t *string)
+
+   Returns the length of *string* in its UTF-8 presentation, or zero
+   if *string* is not a JSON string.
+
 .. function:: int json_string_set(const json_t *string, const char *value)
 
    Sets the associated value of *string* to *value*. *value* must be a
    valid UTF-8 encoded Unicode string. Returns 0 on success and -1 on
    error.
+
+.. function:: int json_string_setn(json_t *string, const char *value, size_t len)
+
+   Like :func:`json_string_set`, but with explicit length, so *value*
+   may contain null characters or not be null terminated.
 
 .. function:: int json_string_set_nocheck(const json_t *string, const char *value)
 
@@ -333,6 +363,11 @@ U+10FFFF are allowed.
    valid UTF-8. Use this function only if you are certain that this
    really is the case (e.g. you have already checked it by other
    means).
+
+.. function:: int json_string_setn_nocheck(json_t *string, const char *value, size_t len)
+
+   Like :func:`json_string_set_nocheck`, but with explicit length,
+   so *value* may contain null characters or not be null terminated.
 
 
 Number
@@ -357,7 +392,6 @@ information, see :ref:`rfc-conformance`.
    should use ``json_int_t`` explicitly.
 
 ``JSON_INTEGER_IS_LONG_LONG``
-
    This is a preprocessor variable that holds the value 1 if
    :type:`json_int_t` is ``long long``, and 0 if it's ``long``. It
    can be used as follows::
@@ -369,7 +403,6 @@ information, see :ref:`rfc-conformance`.
        #endif
 
 ``JSON_INTEGER_FORMAT``
-
    This is a macro that expands to a :func:`printf()` conversion
    specifier that corresponds to :type:`json_int_t`, without the
    leading ``%`` sign, i.e. either ``"lld"`` or ``"ld"``. This macro
@@ -505,12 +538,44 @@ A JSON array is an ordered collection of other JSON values.
    Appends all elements in *other_array* to the end of *array*.
    Returns 0 on success and -1 on error.
 
+The following macro can be used to iterate through all elements
+in an array.
+
+.. function:: json_array_foreach(array, index, value)
+
+   Iterate over every element of ``array``, running the block
+   of code that follows each time with the proper values set to
+   variables ``index`` and ``value``, of types :type:`size_t` and
+   :type:`json_t *` respectively. Example::
+
+       /* array is a JSON array */
+       size_t index;
+       json_t *value;
+
+       json_array_foreach(array, index, value) {
+           /* block of code that uses index and value */
+       }
+
+   The items are returned in increasing index order.
+
+   This macro expands to an ordinary ``for`` statement upon
+   preprocessing, so its performance is equivalent to that of
+   hand-written code using the array access functions.
+   The main advantage of this macro is that it abstracts
+   away the complexity, and makes for shorter, more
+   concise code.
+
+   .. versionadded:: 2.5
+
 
 Object
 ======
 
 A JSON object is a dictionary of key-value pairs, where the key is a
 Unicode string and the value is any JSON value.
+
+Even though NUL bytes are allowed in string values, they are not
+allowed in object keys.
 
 .. function:: json_t *json_object(void)
 
@@ -690,6 +755,32 @@ The iteration protocol can be used for example as follows::
        iter = json_object_iter_next(obj, iter);
    }
 
+.. function:: void json_object_seed(size_t seed)
+
+    Seed the hash function used in Jansson's hashtable implementation.
+    The seed is used to randomize the hash function so that an
+    attacker cannot control its output.
+
+    If *seed* is 0, Jansson generates the seed itselfy by reading
+    random data from the operating system's entropy sources. If no
+    entropy sources are available, falls back to using a combination
+    of the current timestamp (with microsecond precision if possible)
+    and the process ID.
+
+    If called at all, this function must be called before any calls to
+    :func:`json_object()`, either explicit or implicit. If this
+    function is not called by the user, the first call to
+    :func:`json_object()` (either explicit or implicit) seeds the hash
+    function. See :ref:`portability-thread-safety` for notes on thread
+    safety.
+
+    If repeatable results are required, for e.g. unit tests, the hash
+    function can be "unrandomized" by calling :func:`json_object_seed`
+    with a constant value on program startup, e.g.
+    ``json_object_seed(1)``.
+
+    .. versionadded:: 2.6
+
 
 Error reporting
 ===============
@@ -775,6 +866,12 @@ can be ORed together to obtain *flags*.
    output. If ``JSON_INDENT`` is not used or *n* is 0, no newlines are
    inserted between array and object items.
 
+   The ``JSON_MAX_INDENT`` constant defines the maximum indentation
+   that can be used, and its value is 31.
+
+   .. versionchanged:: 2.7
+      Added ``JSON_MAX_INDENT``.
+
 ``JSON_COMPACT``
    This flag enables a compact representation, i.e. sets the separator
    between array and object items to ``","`` and between object keys
@@ -813,6 +910,16 @@ can be ORed together to obtain *flags*.
    Escape the ``/`` characters in strings with ``\/``.
 
    .. versionadded:: 2.4
+
+``JSON_REAL_PRECISION(n)``
+   Output all real numbers with at most *n* digits of precision. The
+   valid range for *n* is between 0 and 31 (inclusive), and other
+   values result in an undefined behavior.
+
+   By default, the precision is 17, to correctly and losslessly encode
+   all IEEE 754 double precision floating point numbers.
+
+   .. versionadded:: 2.7
 
 The following functions perform the actual JSON encoding. The result
 is in UTF-8.
@@ -921,6 +1028,29 @@ macros can be ORed together to obtain *flags*.
 
    .. versionadded:: 2.1
 
+``JSON_DECODE_INT_AS_REAL``
+   JSON defines only one number type. Jansson distinguishes between
+   ints and reals. For more information see :ref:`real-vs-integer`.
+   With this flag enabled the decoder interprets all numbers as real
+   values. Integers that do not have an exact double representation
+   will silently result in a loss of precision. Integers that cause
+   a double overflow will cause an error.
+
+   .. versionadded:: 2.5
+
+``JSON_ALLOW_NUL``
+   Allow ``\u0000`` escape inside string values. This is a safety
+   measure; If you know your input can contain NUL bytes, use this
+   flag. If you don't use this flag, you don't have to worry about NUL
+   bytes inside strings unless you explicitly create themselves by
+   using e.g. :func:`json_stringn()` or ``s#`` format specifier for
+   :func:`json_pack()`.
+
+   Object keys cannot have embedded NUL bytes even if this flag is
+   used.
+
+   .. versionadded:: 2.6
+
 Each function also takes an optional :type:`json_error_t` parameter
 that is filled with error information if decoding fails. It's also
 updated on success; the number of bytes of input read is written to
@@ -993,9 +1123,10 @@ The following functions perform the actual JSON decoding.
    *buffer* points to a buffer of *buflen* bytes, and *data* is the
    corresponding :func:`json_load_callback()` argument passed through.
 
-   On error, the function should return ``(size_t)-1`` to abort the
-   decoding process. When there's no data left, it should return 0 to
-   report that the end of input has been reached.
+   On success, the function should return the number of bytes read; a
+   returned value of 0 indicates that no data was read and that the
+   end of file has been reached. On error, the function should return
+   ``(size_t)-1`` to abort the decoding process.
 
    .. versionadded:: 2.4
 
@@ -1033,12 +1164,40 @@ items::
     /* Create the JSON array ["foo", "bar", true] */
     json_pack("[ssb]", "foo", "bar", 1);
 
-Here's the full list of format characters. The type in parentheses
+Here's the full list of format specifiers. The type in parentheses
 denotes the resulting JSON type, and the type in brackets (if any)
-denotes the C type that is expected as the corresponding argument.
+denotes the C type that is expected as the corresponding argument or
+arguments.
 
 ``s`` (string) [const char \*]
     Convert a NULL terminated UTF-8 string to a JSON string.
+
+``s#`` (string) [const char \*, int]
+    Convert a UTF-8 buffer of a given length to a JSON string.
+
+    .. versionadded:: 2.5
+
+``s%`` (string) [const char \*, size_t]
+    Like ``s#`` but the length argument is of type :type:`size_t`.
+
+    .. versionadded:: 2.6
+
+``+`` [const char \*]
+    Like ``s``, but concatenate to the previous string. Only valid
+    after ``s``, ``s#``, ``+`` or ``+#``.
+
+    .. versionadded:: 2.5
+
+``+#`` [const char \*, int]
+    Like ``s#``, but concatenate to the previous string. Only valid
+    after ``s``, ``s#``, ``+`` or ``+#``.
+
+    .. versionadded:: 2.5
+
+``+%`` (string) [const char \*, size_t]
+    Like ``+#`` but the length argument is of type :type:`size_t`.
+
+    .. versionadded:: 2.6
 
 ``n`` (null)
     Output a JSON null value. No argument is consumed.
@@ -1074,10 +1233,11 @@ denotes the C type that is expected as the corresponding argument.
 
 ``{fmt}`` (object)
     Build an object with contents from the inner format string
-    ``fmt``. The first, third, etc. format character represent a key,
-    and must be ``s`` (as object keys are always strings). The second,
-    fourth, etc. format character represent a value. Any value may be
-    an object or array, i.e. recursive value building is supported.
+    ``fmt``. The first, third, etc. format specifier represent a key,
+    and must be a string (see ``s``, ``s#``, ``+`` and ``+#`` above),
+    as object keys are always strings. The second, fourth, etc. format
+    specifier represent a value. Any value may be an object or array,
+    i.e. recursive value building is supported.
 
 Whitespace, ``:`` and ``,`` are ignored.
 
@@ -1088,9 +1248,9 @@ The following functions compose the value building API:
    .. refcounting:: new
 
    Build a new JSON value according to the format string *fmt*. For
-   each format character (except for ``{}[]n``), one argument is
-   consumed and used to build the corresponding value. Returns *NULL*
-   on error.
+   each format specifier (except for ``{}[]n``), one or more arguments
+   are consumed and used to build the corresponding value. Returns
+   *NULL* on error.
 
 .. function:: json_t *json_pack_ex(json_error_t *error, size_t flags, const char *fmt, ...)
               json_t *json_vpack_ex(json_error_t *error, size_t flags, const char *fmt, va_list ap)
@@ -1119,13 +1279,20 @@ More examples::
   /* Build the JSON array [[1, 2], {"cool": true}] */
   json_pack("[[i,i],{s:b}]", 1, 2, "cool", 1);
 
+  /* Build a string from a non-NUL terminated buffer */
+  char buffer[4] = {'t', 'e', 's', 't'};
+  json_pack("s#", buffer, 4);
+
+  /* Concatentate strings together to build the JSON string "foobarbaz" */
+  json_pack("s++", "foo", "bar", "baz");
+
 
 .. _apiref-unpack:
 
 Parsing and Validating Values
 =============================
 
-This sectinon describes functions that help to validate complex values
+This section describes functions that help to validate complex values
 and extract, or *unpack*, data from them. Like :ref:`building values
 <apiref-pack>`, this is also based on format strings.
 
@@ -1133,10 +1300,10 @@ While a JSON value is unpacked, the type specified in the format
 string is checked to match that of the JSON value. This is the
 validation part of the process. In addition to this, the unpacking
 functions can also check that all items of arrays and objects are
-unpacked. This check be enabled with the format character ``!`` or by
+unpacked. This check be enabled with the format specifier ``!`` or by
 using the flag ``JSON_STRICT``. See below for details.
 
-Here's the full list of format characters. The type in parentheses
+Here's the full list of format specifiers. The type in parentheses
 denotes the JSON type, and the type in brackets (if any) denotes the C
 type whose address should be passed.
 
@@ -1145,6 +1312,12 @@ type whose address should be passed.
     string. The resulting string is extracted by using
     :func:`json_string_value()` internally, so it exists as long as
     there are still references to the corresponding JSON string.
+
+``s%`` (string) [const char \*, size_t \*]
+    Convert a JSON string to a pointer to a NULL terminated UTF-8
+    string and its length.
+
+    .. versionadded:: 2.6
 
 ``n`` (null)
     Expect a JSON null value. Nothing is extracted.
@@ -1178,10 +1351,10 @@ type whose address should be passed.
 
 ``{fmt}`` (object)
     Convert each item in the JSON object according to the inner format
-    string ``fmt``. The first, third, etc. format character represent
+    string ``fmt``. The first, third, etc. format specifier represent
     a key, and must be ``s``. The corresponding argument to unpack
     functions is read as the object key. The second fourth, etc.
-    format character represent a value and is written to the address
+    format specifier represent a value and is written to the address
     given as the corresponding argument. **Note** that every other
     argument is read from and every other is written to.
 
@@ -1194,17 +1367,17 @@ type whose address should be passed.
        extracted. See below for an example.
 
 ``!``
-    This special format character is used to enable the check that
+    This special format specifier is used to enable the check that
     all object and array items are accessed, on a per-value basis. It
-    must appear inside an array or object as the last format character
+    must appear inside an array or object as the last format specifier
     before the closing bracket or brace. To enable the check globally,
     use the ``JSON_STRICT`` unpacking flag.
 
 ``*``
-    This special format character is the opposite of ``!``. If the
+    This special format specifier is the opposite of ``!``. If the
     ``JSON_STRICT`` flag is used, ``*`` can be used to disable the
     strict check on a per-value basis. It must appear inside an array
-    or object as the last format character before the closing bracket
+    or object as the last format specifier before the closing bracket
     or brace.
 
 Whitespace, ``:`` and ``,`` are ignored.
@@ -1229,13 +1402,13 @@ The following functions compose the parsing and validation API:
 
    The first argument of all unpack functions is ``json_t *root``
    instead of ``const json_t *root``, because the use of ``O`` format
-   character causes the reference count of ``root``, or some value
+   specifier causes the reference count of ``root``, or some value
    reachable from ``root``, to be increased. Furthermore, the ``o``
-   format character may be used to extract a value as-is, which allows
+   format specifier may be used to extract a value as-is, which allows
    modifying the structure or contents of a value reachable from
    ``root``.
 
-   If the ``O`` and ``o`` format characters are not used, it's
+   If the ``O`` and ``o`` format specifiers are not used, it's
    perfectly safe to cast a ``const json_t *`` variable to plain
    ``json_t *`` when used with these functions.
 
@@ -1244,7 +1417,7 @@ The following unpacking flags are available:
 ``JSON_STRICT``
     Enable the extra validation step checking that all object and
     array items are unpacked. This is equivalent to appending the
-    format character ``!`` to the end of every array and object in the
+    format specifier ``!`` to the end of every array and object in the
     format string.
 
 ``JSON_VALIDATE_ONLY``
@@ -1343,7 +1516,7 @@ copied in a recursive fashion.
 
    Returns a shallow copy of *value*, or *NULL* on error.
 
-.. function:: json_t *json_deep_copy(json_t *value)
+.. function:: json_t *json_deep_copy(const json_t *value)
 
    .. refcounting:: new
 
@@ -1380,7 +1553,12 @@ behavior is needed.
    Jansson's API functions to ensure that all memory operations use
    the same functions.
 
-Examples:
+**Examples:**
+
+Circumvent problems with different CRT heaps on Windows by using
+application's :func:`malloc()` and :func:`free()`::
+
+    json_set_alloc_funcs(malloc, free);
 
 Use the `Boehm's conservative garbage collector`_ for memory
 operations::
@@ -1407,7 +1585,7 @@ JSON structures by zeroing all memory when freed::
         ptr -= 8;
         size = *((size_t *)ptr);
 
-        guaranteed_memset(ptr, 0, size);
+        guaranteed_memset(ptr, 0, size + 8);
         free(ptr);
     }
 

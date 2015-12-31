@@ -1,6 +1,12 @@
 Jansson README
 ==============
 
+.. image:: https://travis-ci.org/akheron/jansson.png
+  :target: https://travis-ci.org/akheron/jansson
+  
+.. image:: https://ci.appveyor.com/api/projects/status/lmhkkc4q8cwc65ko
+  :target: https://ci.appveyor.com/project/akheron/jansson
+
 Jansson_ is a C library for encoding, decoding and manipulating JSON
 data. Its main features and design principles are:
 

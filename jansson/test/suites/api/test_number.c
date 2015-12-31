@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2012 Petri Lehtinen <petri@digip.org>
+ * Copyright (c) 2009-2014 Petri Lehtinen <petri@digip.org>
  *
  * Jansson is free software; you can redistribute it and/or modify
  * it under the terms of the MIT license. See LICENSE for details.
@@ -12,7 +12,7 @@
 static void run_tests()
 {
     json_t *integer, *real;
-    int i;
+    json_int_t i;
     double d;
 
     integer = json_integer(5);
