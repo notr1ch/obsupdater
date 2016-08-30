@@ -1,8 +1,8 @@
 #pragma once
 
-#define WINVER         0x0600
-#define _WIN32_WINDOWS 0x0600
-#define _WIN32_WINNT   0x0600
+#define WINVER			0x0600
+#define _WIN32_WINDOWS	0x0600
+#define _WIN32_WINNT	0x0600
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
@@ -33,29 +33,29 @@
 
 typedef enum
 {
-    STATE_INVALID,
-    STATE_PENDING_DOWNLOAD,
-    STATE_DOWNLOADING,
-    STATE_DOWNLOADED,
-    STATE_INSTALLED,
+	STATE_INVALID,
+	STATE_PENDING_DOWNLOAD,
+	STATE_DOWNLOADING,
+	STATE_DOWNLOADED,
+	STATE_INSTALLED,
 } state_t;
 
 typedef struct update_s
 {
-    struct update_s *next;
-    _TCHAR          *sourceURL;
-    _TCHAR          *outputPath;
-    _TCHAR          *tempPath;
-    _TCHAR          *previousFile;
-    _TCHAR          *basename;
-    DWORD           fileSize;
-    BYTE            hash[20];
-    state_t         state;
-    int             has_hash;
-    int             patchable;
-	BYTE            downloadhash[20];
-    BYTE            my_hash[20];
-    char            *packageName;
+	struct update_s *next;
+	_TCHAR		*sourceURL;
+	_TCHAR		*outputPath;
+	_TCHAR		*tempPath;
+	_TCHAR		*previousFile;
+	_TCHAR		*basename;
+	DWORD		fileSize;
+	BYTE		hash[20];
+	state_t		state;
+	int			has_hash;
+	int			patchable;
+	BYTE		downloadhash[20];
+	BYTE		my_hash[20];
+	char		*packageName;
 } update_t;
 
 BOOL HTTPGetFile (HINTERNET hSession, HINTERNET hConnect, const _TCHAR *url, const _TCHAR *outputPath, const _TCHAR *extraHeaders, int *responseCode);
@@ -77,8 +77,8 @@ extern HANDLE cancelRequested;
 #pragma pack(push, r1, 1)
 
 typedef struct {
-    BLOBHEADER blobheader;
-    RSAPUBKEY rsapubkey;
+	BLOBHEADER blobheader;
+	RSAPUBKEY rsapubkey;
 } PUBLICKEYHEADER;
 
 #pragma pack(pop, r1)

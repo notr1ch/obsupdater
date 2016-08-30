@@ -86,7 +86,7 @@ static int bz2_read(const struct bspatch_stream* stream, void* buffer, int lengt
 
 	bz2 = (BZFILE*)stream->opaque;
 	n = BZ2_bzRead(&bz2err, bz2, buffer, length);
-    if (n != length || bz2err < 0)
+	if (n != length || bz2err < 0)
 		return -1;
 
 	return 0;
@@ -94,159 +94,159 @@ static int bz2_read(const struct bspatch_stream* stream, void* buffer, int lengt
 
 BOOL ApplyPatch(LPCTSTR patchFile, LPCTSTR targetFile)
 {
-    int ret = 1;
+	int ret = 1;
 	int bz2err;
 	uint8_t header[24];
 	int64_t newsize;
 	BZFILE* bz2;
 	struct bspatch_stream stream;
 
-    HANDLE hDest = INVALID_HANDLE_VALUE;
-    HANDLE hPatch = INVALID_HANDLE_VALUE;
-    HANDLE hTarget = INVALID_HANDLE_VALUE;
-    FILE *f = NULL;
+	HANDLE hDest = INVALID_HANDLE_VALUE;
+	HANDLE hPatch = INVALID_HANDLE_VALUE;
+	HANDLE hTarget = INVALID_HANDLE_VALUE;
+	FILE *f = NULL;
 
-    uint8_t *old = NULL, *newData = NULL;
+	uint8_t *old = NULL, *newData = NULL;
 
-    hPatch = CreateFile (patchFile, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (hPatch == INVALID_HANDLE_VALUE)
-    {
-        ret = GetLastError();
-        goto error;
-    }
+	hPatch = CreateFile (patchFile, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+	if (hPatch == INVALID_HANDLE_VALUE)
+	{
+		ret = GetLastError();
+		goto error;
+	}
 
-    hTarget = CreateFile (targetFile, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (hTarget == INVALID_HANDLE_VALUE)
-    {
-        ret = GetLastError();
-        goto error;
-    }
+	hTarget = CreateFile (targetFile, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+	if (hTarget == INVALID_HANDLE_VALUE)
+	{
+		ret = GetLastError();
+		goto error;
+	}
 
-    //read patch header
-    DWORD read;
-    if (ReadFile (hPatch, header, sizeof(header), &read, NULL) && read == sizeof(header))
-    {
-        if (memcmp(header, "ENDSLEY/BSDIFF43", 16))
-        {
-            ret = -4;
-            goto error;
-        }
-    }
-    else
-    {
-        ret = GetLastError();
-        goto error;
-    }
+	//read patch header
+	DWORD read;
+	if (ReadFile (hPatch, header, sizeof(header), &read, NULL) && read == sizeof(header))
+	{
+		if (memcmp(header, "ENDSLEY/BSDIFF43", 16))
+		{
+			ret = -4;
+			goto error;
+		}
+	}
+	else
+	{
+		ret = GetLastError();
+		goto error;
+	}
 
-    //read patch new file size
-    newsize = offtin(header+16);
+	//read patch new file size
+	newsize = offtin(header+16);
 
-    if (newsize < 0 || newsize >= 0x7ffffffff)
-    {
-        ret = -5;
-        goto error;
-    }
+	if (newsize < 0 || newsize >= 0x7ffffffff)
+	{
+		ret = -5;
+		goto error;
+	}
 
-    //read current file data
-    DWORD targetFileSize;
+	//read current file data
+	DWORD targetFileSize;
 
-    targetFileSize = GetFileSize (hTarget, NULL);
-    if (targetFileSize == INVALID_FILE_SIZE)
-    {
-        ret = GetLastError();
-        goto error;
-    }
+	targetFileSize = GetFileSize (hTarget, NULL);
+	if (targetFileSize == INVALID_FILE_SIZE)
+	{
+		ret = GetLastError();
+		goto error;
+	}
 
-    old = (uint8_t *)malloc (targetFileSize + 1);
+	old = (uint8_t *)malloc (targetFileSize + 1);
 	if (!old)
 	{
 		ret = -6;
 		goto error;
 	}
 
-    if (!(ReadFile (hTarget, old, targetFileSize, &read, NULL) || read != targetFileSize))
-    {
-        ret = GetLastError();
-        goto error;
-    }
+	if (!(ReadFile (hTarget, old, targetFileSize, &read, NULL) || read != targetFileSize))
+	{
+		ret = GetLastError();
+		goto error;
+	}
 
-    CloseHandle (hPatch);
-    hPatch = INVALID_HANDLE_VALUE;
+	CloseHandle (hPatch);
+	hPatch = INVALID_HANDLE_VALUE;
 
-    CloseHandle (hTarget);
-    hTarget = INVALID_HANDLE_VALUE;
+	CloseHandle (hTarget);
+	hTarget = INVALID_HANDLE_VALUE;
 
-    //prepare new file
-    newData = (uint8_t *)malloc (newsize + 1);
+	//prepare new file
+	newData = (uint8_t *)malloc (newsize + 1);
 
-    //open patch for bzip2
-    _tfopen_s (&f, patchFile, _T("rb"));
-    if (!f)
-    {
-        ret = -8;
-        goto error;
-    }
+	//open patch for bzip2
+	_tfopen_s (&f, patchFile, _T("rb"));
+	if (!f)
+	{
+		ret = -8;
+		goto error;
+	}
 
-    _fseeki64(f, sizeof(header), SEEK_SET);
+	_fseeki64(f, sizeof(header), SEEK_SET);
 
-    if (NULL == (bz2 = BZ2_bzReadOpen(&bz2err, f, 0, 0, NULL, 0)))
-    {
-        ret = -10;
-        goto error;
-    }
+	if (NULL == (bz2 = BZ2_bzReadOpen(&bz2err, f, 0, 0, NULL, 0)))
+	{
+		ret = -10;
+		goto error;
+	}
 
 	stream.read = bz2_read;
 	stream.opaque = bz2;
 
-    //actually patch the data
+	//actually patch the data
 	if (bspatch(old, targetFileSize, newData, newsize, &stream))
-    {
-        ret = -9;
-        goto error;
-    }
+	{
+		ret = -9;
+		goto error;
+	}
 
 	BZ2_bzReadClose(&bz2err, bz2);
 
 	fclose(f);
-    f = NULL;
+	f = NULL;
 
-    //write new file
-    DWORD wrote;
+	//write new file
+	DWORD wrote;
 
-    hDest = CreateFile(targetFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-    if (hDest == INVALID_HANDLE_VALUE)
-    {
-        ret = GetLastError();
-        goto error;
-    }
+	hDest = CreateFile(targetFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+	if (hDest == INVALID_HANDLE_VALUE)
+	{
+		ret = GetLastError();
+		goto error;
+	}
 
-    if (!WriteFile(hDest, newData, newsize, &wrote, NULL) || wrote != newsize)
-    {
-        ret = GetLastError();
-        goto error;
-    }
+	if (!WriteFile(hDest, newData, newsize, &wrote, NULL) || wrote != newsize)
+	{
+		ret = GetLastError();
+		goto error;
+	}
 
-    CloseHandle(hDest);
+	CloseHandle(hDest);
 
-    ret = 0;
+	ret = 0;
 
 error:
 
-    if (old)
-        free (old);
+	if (old)
+		free (old);
 
-    if (newData)
-        free (newData);
+	if (newData)
+		free (newData);
 
-    if (hTarget != INVALID_HANDLE_VALUE)
-        CloseHandle (hTarget);
+	if (hTarget != INVALID_HANDLE_VALUE)
+		CloseHandle (hTarget);
 
-    if (hPatch != INVALID_HANDLE_VALUE)
-        CloseHandle (hPatch);
+	if (hPatch != INVALID_HANDLE_VALUE)
+		CloseHandle (hPatch);
 
-    if (f)
-        fclose (f);
+	if (f)
+		fclose (f);
 
-    return ret;
+	return ret;
 }
 
