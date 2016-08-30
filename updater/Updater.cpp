@@ -357,7 +357,7 @@ DWORD WINAPI DownloadWorkerThread (VOID *arg)
                 return 1;
             }
 
-            if (memcmp(updates->hash, downloadHash, 20))
+            if (memcmp(updates->downloadhash, downloadHash, 20))
             {
                 downloadThreadFailure = TRUE;
                 DeleteFile (updates->tempPath);
@@ -467,15 +467,15 @@ DWORD WINAPI UpdateThread (VOID *arg)
         goto failure;
     }
 
-    _TCHAR *p = _tcschr(cmdLine, ' ');
-    if (p)
-    {
-        *p = '\0';
-        p++;
+	_TCHAR *p = _tcschr(cmdLine, ' ');
+	if (p)
+	{
+		*p = '\0';
+		p++;
 
-        if (!_tcscmp(p, _T("Portable")))
-            bIsPortable = TRUE;
-    }
+		if (!_tcscmp(p, _T("Portable")))
+			bIsPortable = TRUE;
+	}
 
     const _TCHAR *targetPlatform = cmdLine;
 
@@ -483,14 +483,26 @@ DWORD WINAPI UpdateThread (VOID *arg)
     TCHAR tempPath[MAX_PATH];
     TCHAR lpAppDataPath[MAX_PATH];
 
+	manifestPath[0] = 0;
+	tempPath[0] = 0;
+	lpAppDataPath[0] = 0;
+
     if (bIsPortable)
     {
         GetCurrentDirectory(_countof(lpAppDataPath), lpAppDataPath);
     }
     else
     {
-        SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, lpAppDataPath);
+		PWSTR pOut;
+		if (SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, NULL, &pOut) != S_OK)
+		{
+			Status(TEXT("Update failed: Could not determine AppData location"));
+			goto failure;
+		}
+
+		StringCbCopy(lpAppDataPath, sizeof(lpAppDataPath), pOut);
         StringCbCat(lpAppDataPath, sizeof(lpAppDataPath), TEXT("\\OBS"));
+		CoTaskMemFree (pOut);
     }
 
     StringCbPrintf(manifestPath, sizeof(manifestPath), TEXT("%s\\updates\\packages.xconfig"), lpAppDataPath);
@@ -701,7 +713,8 @@ DWORD WINAPI UpdateThread (VOID *arg)
             updates->packageName = _strdup(packageName);
             updates->state = STATE_PENDING_DOWNLOAD;
             updates->patchable = 0;
-            StringToHash(updateHashStr, updates->hash);
+			StringToHash(updateHashStr, updates->downloadhash);
+			memcpy(updates->hash, updates->downloadhash, sizeof(updates->hash));
             
             updates->has_hash = has_hash;
             if (has_hash)
@@ -869,7 +882,7 @@ DWORD WINAPI UpdateThread (VOID *arg)
                     if (!MultiByteToWideChar(CP_UTF8, 0, patchHash, -1, patchHashStr, _countof(patchHashStr)))
                         continue;
 
-                    StringToHash(patchHashStr, updates->hash);
+                    StringToHash(patchHashStr, updates->downloadhash);
 
                     // Re-calculate download size
                     totalFileSize -= (updates->fileSize - patchSize);
@@ -909,30 +922,31 @@ DWORD WINAPI UpdateThread (VOID *arg)
                 //Check if we're replacing an existing file or just installing a new one
                 if (GetFileAttributes(updates->outputPath) != INVALID_FILE_ATTRIBUTES)
                 {
-                    //Backup the existing file in case a rollback is needed
+					_TCHAR *curFileName = NULL;
+					_TCHAR baseName[MAX_PATH];
+
+					StringCbCopy(baseName, sizeof(baseName), updates->outputPath);
+					curFileName = _tcsrchr(baseName, '/');
+					if (curFileName)
+					{
+						curFileName[0] = '\0';
+						curFileName++;
+					}
+					else
+						curFileName = baseName;
+					
+					//Backup the existing file in case a rollback is needed
                     StringCbCopy(oldFileRenamedPath, sizeof(oldFileRenamedPath), updates->outputPath);
                     StringCbCat(oldFileRenamedPath, sizeof(oldFileRenamedPath), _T(".old"));
 
                     if (!MyCopyFile(updates->outputPath, oldFileRenamedPath))
                     {
-                        _TCHAR baseName[MAX_PATH];
-
                         int is_sharing_violation = (GetLastError() == ERROR_SHARING_VIOLATION);
 
-                        StringCbCopy (baseName, sizeof(baseName), updates->outputPath);
-                        p = _tcsrchr (baseName, '/');
-                        if (p)
-                        {
-                            p[0] = '\0';
-                            p++;
-                        }
-                        else
-                            p = baseName;
-
                         if (is_sharing_violation)
-                            Status (_T("Update failed: %s is still in use. Close all programs and try again."), p);
+							Status(_T("Update failed: %s is still in use. Close all programs and try again."), curFileName);
                         else
-                            Status (_T("Update failed: Couldn't backup %s (error %d)"), p, GetLastError());
+							Status(_T("Update failed: Couldn't backup %s (error %d)"), curFileName, GetLastError());
                         goto failure;
                     }
 
@@ -943,6 +957,22 @@ DWORD WINAPI UpdateThread (VOID *arg)
                     {
                         error_code = ApplyPatch(updates->tempPath, updates->outputPath);
                         installed_ok = (error_code == 0);
+
+						if (installed_ok)
+						{
+							BYTE patchedFileHash[20];
+							if (!CalculateFileHash(updates->outputPath, patchedFileHash))
+							{
+								Status(_T("Update failed: Couldn't verify integrity of patched %s"), curFileName);
+								goto failure;
+							}
+
+							if (memcmp(updates->hash, patchedFileHash, 20))
+							{
+								Status(_T("Update failed: Integrity check of patched %s failed"), curFileName);
+								goto failure;
+							}
+						}
                     }
                     else
                     {
@@ -952,24 +982,12 @@ DWORD WINAPI UpdateThread (VOID *arg)
 
                     if (!installed_ok)
                     {
-                        _TCHAR baseName[MAX_PATH];
-
                         int is_sharing_violation = (error_code == ERROR_SHARING_VIOLATION);
 
-                        StringCbCopy (baseName, sizeof(baseName), updates->outputPath);
-                        p = _tcsrchr (baseName, '/');
-                        if (p)
-                        {
-                            p[0] = '\0';
-                            p++;
-                        }
-                        else
-                            p = baseName;
-
                         if (is_sharing_violation)
-                            Status (_T("Update failed: %s is still in use. Close all programs and try again."), p);
+							Status(_T("Update failed: %s is still in use. Close all programs and try again."), curFileName);
                         else
-                            Status (_T("Update failed: Couldn't update %s (error %d)"), p, GetLastError());
+							Status(_T("Update failed: Couldn't update %s (error %d)"), curFileName, GetLastError());
                         goto failure;
                     }
 
@@ -1031,7 +1049,9 @@ failure:
     {
         //This handles deleting temp files and rolling back and partially installed updates
         CleanupPartialUpdates (&updateList);
-        RemoveDirectory (tempPath);
+		
+		if (tempPath[0])
+			RemoveDirectory (tempPath);
 
         if (WaitForSingleObject(cancelRequested, 0) == WAIT_OBJECT_0)
             Status (_T("Update aborted."));
@@ -1045,7 +1065,8 @@ failure:
     }
     else
     {
-        RemoveDirectory (tempPath);
+		if (tempPath[0])
+			RemoveDirectory (tempPath);
     }
 
     DestroyUpdateList (&updateList);

@@ -53,6 +53,7 @@ typedef struct update_s
     state_t         state;
     int             has_hash;
     int             patchable;
+	BYTE            downloadhash[20];
     BYTE            my_hash[20];
     char            *packageName;
 } update_t;
