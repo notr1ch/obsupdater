@@ -80,6 +80,10 @@ BOOL HTTPPostData(const _TCHAR *url, const BYTE *data, int dataLen, const _TCHAR
         *responseCode = -4;
         goto failure;
     }
+	else
+	{
+		statusCode[_countof(statusCode)-1] = 0;
+	}
 
     encodingLen = sizeof(encoding);
     if (!WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_ENCODING, WINHTTP_HEADER_NAME_BY_INDEX, encoding, &encodingLen, WINHTTP_NO_HEADER_INDEX))
@@ -91,6 +95,10 @@ BOOL HTTPPostData(const _TCHAR *url, const BYTE *data, int dataLen, const _TCHAR
             goto failure;
         }
     }
+	else
+	{
+		encoding[_countof(encoding)-1] = 0;
+	}
 
     DWORD responseBufferSize = 262144;
 
@@ -299,6 +307,10 @@ BOOL HTTPGetFile (HINTERNET hSession, HINTERNET hConnect, const _TCHAR *url, con
         *responseCode = -4;
         goto failure;
     }
+	else
+	{
+		statusCode[_countof(statusCode) - 1] = 0;
+	}
 
     encodingLen = sizeof(encoding);
     if (!WinHttpQueryHeaders (hRequest, WINHTTP_QUERY_CONTENT_ENCODING, WINHTTP_HEADER_NAME_BY_INDEX, encoding, &encodingLen, WINHTTP_NO_HEADER_INDEX))
@@ -310,6 +322,10 @@ BOOL HTTPGetFile (HINTERNET hSession, HINTERNET hConnect, const _TCHAR *url, con
             goto failure;
         }
     }
+	else
+	{
+		encoding[_countof(encoding) - 1] = 0;
+	}
 
     BOOL gzip = FALSE;
 

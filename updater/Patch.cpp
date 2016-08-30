@@ -141,7 +141,7 @@ BOOL ApplyPatch(LPCTSTR patchFile, LPCTSTR targetFile)
     //read patch new file size
     newsize = offtin(header+16);
 
-    if (newsize < 0)
+    if (newsize < 0 || newsize >= 0x7ffffffff)
     {
         ret = -5;
         goto error;
@@ -158,6 +158,11 @@ BOOL ApplyPatch(LPCTSTR patchFile, LPCTSTR targetFile)
     }
 
     old = (uint8_t *)malloc (targetFileSize + 1);
+	if (!old)
+	{
+		ret = -6;
+		goto error;
+	}
 
     if (!(ReadFile (hTarget, old, targetFileSize, &read, NULL) || read != targetFileSize))
     {
