@@ -395,11 +395,11 @@ BOOL HTTPGetFile (HINTERNET hSession, HINTERNET hConnect, const _TCHAR *url, con
 
 				if (gzip)
 				{
-					do
-					{
-						strm.avail_in = dwOutSize;
-						strm.next_in = buffer;
+                    strm.avail_in = dwOutSize;
+                    strm.next_in = buffer;
 
+                    do
+					{
 						strm.avail_out = 262144;
 						strm.next_out = outputBuffer;
 
